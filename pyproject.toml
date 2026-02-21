@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "junos-ops-mcp"
+dynamic = ["version"]
+description = "MCP server for junos-ops: expose Juniper device operations to AI assistants"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [
+    {name = "AIKAWA Shigechika"},
+]
+keywords = ["juniper", "junos", "mcp", "model-context-protocol", "network", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "mcp>=1.0",
+    "junos-ops",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-cov"]
+
+[tool.setuptools]
+packages = ["junos_ops_mcp"]
+
+[tool.setuptools.dynamic]
+version = {attr = "junos_ops_mcp.__version__"}
