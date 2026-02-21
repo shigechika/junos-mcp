@@ -110,6 +110,14 @@ class TestInitGlobals:
         assert common.args.dry_run is False
         assert common.args.force is False
 
+    def test_init_expands_tilde(self, tmp_path, monkeypatch):
+        """~ がホームディレクトリに展開される"""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("[rt1.example.jp]\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        _init_globals("~/config.ini")
+        assert common.args.config == str(config_file)
+
 
 # --- _capture_stdout ---
 

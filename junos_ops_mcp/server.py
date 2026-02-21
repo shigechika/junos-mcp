@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import io
 import os
+import os.path
 from pprint import pformat
 
 from mcp.server.fastmcp import FastMCP
@@ -33,7 +34,7 @@ def _init_globals(config_path: str = "") -> str | None:
         debug=False,
         dry_run=False,
         force=False,
-        config=config_path or common.get_default_config(),
+        config=os.path.expanduser(config_path) if config_path else common.get_default_config(),
         list_format=None,
         copy=False,
         install=False,
