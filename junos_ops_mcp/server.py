@@ -23,10 +23,23 @@ from junos_ops import upgrade
 mcp = FastMCP("junos-ops")
 
 
+def _resolve_config_path(config_path: str) -> str:
+    """Resolve config file path from argument, environment variable, or default.
+
+    Priority: config_path argument > JUNOS_OPS_CONFIG env var > default search.
+    """
+    if config_path:
+        return os.path.expanduser(config_path)
+    env_path = os.environ.get("JUNOS_OPS_CONFIG", "")
+    if env_path:
+        return os.path.expanduser(env_path)
+    return common.get_default_config()
+
+
 def _init_globals(config_path: str = "") -> str | None:
     """Initialize junos-ops global state (common.args and common.config).
 
-    :param config_path: Path to config.ini. Empty string uses default search.
+    :param config_path: Path to config.ini. Empty string uses env var or default search.
     :return: Error message string, or None on success.
     """
     # args の初期化（conftest.py と同パターン）
@@ -34,7 +47,7 @@ def _init_globals(config_path: str = "") -> str | None:
         debug=False,
         dry_run=False,
         force=False,
-        config=os.path.expanduser(config_path) if config_path else common.get_default_config(),
+        config=_resolve_config_path(config_path),
         list_format=None,
         copy=False,
         install=False,

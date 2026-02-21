@@ -12,6 +12,7 @@ from junos_ops_mcp.server import (
     _connect_and_run,
     _ensure_config,
     _init_globals,
+    _resolve_config_path,
     get_device_facts,
     get_version,
     list_remote_files,
@@ -117,6 +118,45 @@ class TestInitGlobals:
         monkeypatch.setenv("HOME", str(tmp_path))
         _init_globals("~/config.ini")
         assert common.args.config == str(config_file)
+
+    def test_init_uses_env_var(self, tmp_path, monkeypatch):
+        """JUNOS_OPS_CONFIG 環境変数からパスを取得"""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("[rt1.example.jp]\n")
+        monkeypatch.setenv("JUNOS_OPS_CONFIG", str(config_file))
+        _init_globals("")
+        assert common.args.config == str(config_file)
+
+
+# --- _resolve_config_path ---
+
+
+class TestResolveConfigPath:
+    def test_argument_takes_priority(self, tmp_path, monkeypatch):
+        """引数が環境変数より優先される"""
+        monkeypatch.setenv("JUNOS_OPS_CONFIG", "/other/config.ini")
+        result = _resolve_config_path(str(tmp_path / "config.ini"))
+        assert result == str(tmp_path / "config.ini")
+
+    def test_env_var_when_no_argument(self, monkeypatch):
+        """引数なしで環境変数が使われる"""
+        monkeypatch.setenv("JUNOS_OPS_CONFIG", "/env/config.ini")
+        result = _resolve_config_path("")
+        assert result == "/env/config.ini"
+
+    def test_env_var_tilde_expanded(self, tmp_path, monkeypatch):
+        """環境変数の ~ も展開される"""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("JUNOS_OPS_CONFIG", "~/.config/junos-ops/config.ini")
+        result = _resolve_config_path("")
+        assert result == str(tmp_path / ".config/junos-ops/config.ini")
+
+    def test_default_when_no_argument_no_env(self, monkeypatch):
+        """引数も環境変数もない場合はデフォルト探索"""
+        monkeypatch.delenv("JUNOS_OPS_CONFIG", raising=False)
+        result = _resolve_config_path("")
+        # get_default_config() の結果と一致するはず
+        assert result == common.get_default_config()
 
 
 # --- _capture_stdout ---
