@@ -52,33 +52,55 @@ junos-ops と同じ `config.ini` を使用します。詳細は [junos-ops READM
 
 ### Claude Code
 
-`~/.claude/settings.json` に追加:
+`claude mcp add` コマンドで MCP サーバーを登録します:
 
-```json
-{
-  "mcpServers": {
-    "junos-ops": {
-      "command": "/path/to/junos-ops-mcp/.venv/bin/python",
-      "args": ["-m", "junos_ops_mcp.server"]
-    }
-  }
-}
+```bash
+claude mcp add junos-ops \
+  -e JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- /path/to/junos-ops-mcp/.venv/bin/python -m junos_ops_mcp
+```
+
+`--scope`（`-s`）オプションで設定の保存先を選択できます:
+
+| スコープ | 説明 | 保存先 |
+|----------|------|--------|
+| `local`（デフォルト） | 現在のプロジェクト、自分のみ | `~/.claude.json` |
+| `project` | 現在のプロジェクト、チームで共有 | プロジェクトルートの `.mcp.json` |
+| `user` | 全プロジェクト、自分のみ | `~/.claude.json` |
+
+スコープを明示的に指定する例:
+
+```bash
+claude mcp add junos-ops -s project \
+  -e JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- /path/to/junos-ops-mcp/.venv/bin/python -m junos_ops_mcp
 ```
 
 ### Claude Desktop
 
-Claude Desktop の設定（`claude_desktop_config.json`）に追加:
+Claude Desktop の設定ファイルに追加します:
+
+| OS | 設定ファイル |
+|----|-------------|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
 
 ```json
 {
   "mcpServers": {
     "junos-ops": {
       "command": "/path/to/junos-ops-mcp/.venv/bin/python",
-      "args": ["-m", "junos_ops_mcp.server"]
+      "args": ["-m", "junos_ops_mcp"],
+      "env": {
+        "JUNOS_OPS_CONFIG": "/path/to/config.ini"
+      }
     }
   }
 }
 ```
+
+設定変更後は Claude Desktop を再起動してください。
 
 ### MCP Inspector（開発用）
 

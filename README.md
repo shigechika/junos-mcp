@@ -53,33 +53,55 @@ Each tool accepts an optional `config_path` parameter. If omitted, the default s
 
 ### Claude Code
 
-Add to `~/.claude/settings.json`:
+Register the MCP server with `claude mcp add`:
 
-```json
-{
-  "mcpServers": {
-    "junos-ops": {
-      "command": "/path/to/junos-ops-mcp/.venv/bin/python",
-      "args": ["-m", "junos_ops_mcp.server"]
-    }
-  }
-}
+```bash
+claude mcp add junos-ops \
+  -e JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- /path/to/junos-ops-mcp/.venv/bin/python -m junos_ops_mcp
+```
+
+The `--scope` (`-s`) option controls where the configuration is stored:
+
+| Scope | Description | Config location |
+|-------|-------------|-----------------|
+| `local` (default) | Current project, current user only | `~/.claude.json` |
+| `project` | Current project, shared with team | `.mcp.json` in project root |
+| `user` | All projects, current user only | `~/.claude.json` |
+
+Example with explicit scope:
+
+```bash
+claude mcp add junos-ops -s project \
+  -e JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- /path/to/junos-ops-mcp/.venv/bin/python -m junos_ops_mcp
 ```
 
 ### Claude Desktop
 
-Add to Claude Desktop settings (`claude_desktop_config.json`):
+Add to Claude Desktop config file:
+
+| OS | Config file |
+|----|-------------|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
 
 ```json
 {
   "mcpServers": {
     "junos-ops": {
       "command": "/path/to/junos-ops-mcp/.venv/bin/python",
-      "args": ["-m", "junos_ops_mcp.server"]
+      "args": ["-m", "junos_ops_mcp"],
+      "env": {
+        "JUNOS_OPS_CONFIG": "/path/to/config.ini"
+      }
     }
   }
 }
 ```
+
+Restart Claude Desktop after editing.
 
 ### MCP Inspector (development)
 
