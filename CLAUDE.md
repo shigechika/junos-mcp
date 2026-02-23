@@ -89,8 +89,11 @@ pytest tests/ -v
 
 ## Claude Code への登録（ローカル開発）
 
+プロジェクトスコープで登録すると、このリポジトリ内でのみ MCP サーバーが有効になる。
+登録すると `.mcp.json` が生成される（ローカルパスを含むため `.gitignore` 済み）。
+
 ```bash
-claude mcp add junos-ops -s user \
+claude mcp add junos-ops -s project \
   -e JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
   -- /path/to/junos-ops-mcp/.venv/bin/python -m junos_ops_mcp
 ```
