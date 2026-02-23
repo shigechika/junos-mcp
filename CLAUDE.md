@@ -24,7 +24,7 @@ junos_ops_mcp/
 └── server.py           # FastMCP サーバー定義、ツール実装
 tests/
 ├── __init__.py
-└── test_server.py      # 27 ユニットテスト
+└── test_server.py      # 37 ユニットテスト
 pyproject.toml          # パッケージメタデータ、依存関係
 README.md               # 英語版
 README.ja.md            # 日本語版
@@ -46,6 +46,11 @@ README.ja.md            # 日本語版
 - `get_version` — バージョン情報（`upgrade.show_version()`）
 - `run_show_command` — 任意の CLI コマンド実行（`dev.cli()`）
 - `list_remote_files` — リモートファイル一覧（`upgrade.list_remote_path()`）
+
+#### MCP ツール（Phase 2: 読み取り専用追加）
+- `check_upgrade_readiness` — アップグレード準備状況（`upgrade.check_running_package()` + `upgrade.dry_run()`）
+- `compare_version` — バージョン文字列比較（`upgrade.compare_version()`、デバイス接続不要）
+- `get_package_info` — モデル別パッケージ情報（`upgrade.get_model_file()` + `upgrade.get_model_hash()`、デバイス接続不要）
 
 #### 共通パラメータ
 - `hostname`: 接続先ホスト名（config.ini に存在する必要あり、必須）
@@ -80,7 +85,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-27テスト（グローバル初期化、config パス解決、stdout キャプチャ、接続管理、4ツールの動作検証）。
+37テスト（グローバル初期化、config パス解決、stdout キャプチャ、接続管理、7ツールの動作検証）。
 
 ## Claude Code への登録（ローカル開発）
 

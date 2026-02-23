@@ -7,14 +7,17 @@ Exposes Juniper Networks device operations to MCP-compatible AI assistants
 
 ## Features
 
-Read-only device operations (Phase 1):
+Read-only device operations:
 
-| Tool | Description |
-|------|-------------|
-| `get_device_facts` | Get basic device information (model, hostname, serial, version) |
-| `get_version` | Get JUNOS version with upgrade status |
-| `run_show_command` | Run any CLI show command |
-| `list_remote_files` | List files on remote device path |
+| Tool | Description | Connection |
+|------|-------------|------------|
+| `get_device_facts` | Get basic device information (model, hostname, serial, version) | Yes |
+| `get_version` | Get JUNOS version with upgrade status | Yes |
+| `run_show_command` | Run any CLI show command | Yes |
+| `list_remote_files` | List files on remote device path | Yes |
+| `check_upgrade_readiness` | Check if device is ready for upgrade | Yes |
+| `compare_version` | Compare two JUNOS version strings | No |
+| `get_package_info` | Get model-specific package file and hash from config | No |
 
 ## Requirements
 

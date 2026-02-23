@@ -1,7 +1,8 @@
 """MCP server exposing junos-ops device operations.
 
 Provides read-only tools for Juniper Networks device management:
-get_device_facts, get_version, run_show_command, list_remote_files.
+get_device_facts, get_version, run_show_command, list_remote_files,
+check_upgrade_readiness, compare_version, get_package_info.
 
 STDIO transport is used for JSON-RPC communication. All junos-ops
 print() output is captured via contextlib.redirect_stdout to avoid
@@ -210,6 +211,76 @@ def list_remote_files(hostname: str, config_path: str = "") -> str:
             common.args.list_format = original_format
 
     return _connect_and_run(hostname, config_path, _operation)
+
+
+@mcp.tool()
+def check_upgrade_readiness(hostname: str, config_path: str = "") -> str:
+    """Check if a device is ready for upgrade.
+
+    Verifies whether the device is already running the target version,
+    and performs a dry-run to check local/remote package availability.
+
+    Args:
+        hostname: Target device hostname (must exist in config.ini)
+        config_path: Path to config.ini (empty string uses default search)
+    """
+    def _operation(hostname, dev):
+        # ターゲットバージョンで既に稼働中か確認
+        running_ok, captured_check = _capture_stdout(
+            upgrade.check_running_package, hostname, dev
+        )
+        if running_ok:
+            return f"# {hostname}\nDevice is already running the target version.\n{captured_check.strip()}"
+
+        # dry_run でローカル/リモートパッケージの状態をチェック
+        result, captured_dry = _capture_stdout(upgrade.dry_run, hostname, dev)
+        status = "READY" if result else "NOT READY"
+        return f"# {hostname}\nUpgrade readiness: {status}\n{captured_dry.strip()}"
+
+    return _connect_and_run(hostname, config_path, _operation)
+
+
+@mcp.tool()
+def compare_version(left: str, right: str) -> str:
+    """Compare two JUNOS version strings.
+
+    Returns whether left is greater than, equal to, or less than right.
+    No device connection required.
+
+    Args:
+        left: First JUNOS version string (e.g., "22.4R3-S6.5")
+        right: Second JUNOS version string (e.g., "23.2R1.0")
+    """
+    result = upgrade.compare_version(left, right)
+    if result is None:
+        return "Error: invalid version string (None)"
+    labels = {1: f"{left} > {right}", 0: f"{left} == {right}", -1: f"{left} < {right}"}
+    return labels.get(result, f"Error: unexpected result {result}")
+
+
+@mcp.tool()
+def get_package_info(hostname: str, model: str, config_path: str = "") -> str:
+    """Get package file name and expected hash for a specific device model.
+
+    Retrieves model-specific package information from config.ini.
+    No device connection required.
+
+    Args:
+        hostname: Target device hostname (must exist in config.ini)
+        model: Device model name (e.g., "EX2300-24T")
+        config_path: Path to config.ini (empty string uses default search)
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return err
+    if not common.config.has_section(hostname):
+        return f"Error: hostname '{hostname}' not found in config"
+    try:
+        file = upgrade.get_model_file(hostname, model)
+        hash_val = upgrade.get_model_hash(hostname, model)
+        return f"# {hostname} ({model})\nPackage file: {file}\nExpected hash: {hash_val}"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 if __name__ == "__main__":

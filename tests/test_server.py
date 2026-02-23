@@ -13,7 +13,10 @@ from junos_ops_mcp.server import (
     _ensure_config,
     _init_globals,
     _resolve_config_path,
+    check_upgrade_readiness,
+    compare_version,
     get_device_facts,
+    get_package_info,
     get_version,
     list_remote_files,
     run_show_command,
@@ -372,3 +375,107 @@ class TestListRemoteFiles:
         common.args.list_format = "short"
         list_remote_files("rt1.example.jp")
         assert common.args.list_format == "short"
+
+
+# --- check_upgrade_readiness ---
+
+
+class TestCheckUpgradeReadiness:
+    @patch("junos_ops.common.connect")
+    @patch("junos_ops_mcp.server.upgrade.check_running_package")
+    def test_already_running_target(self, mock_check, mock_connect, mock_config):
+        """既にターゲットバージョンで稼働中の場合"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = (False, mock_dev)
+        mock_check.return_value = True
+        result = check_upgrade_readiness("rt1.example.jp")
+        assert "already running the target version" in result
+        assert "rt1.example.jp" in result
+
+    @patch("junos_ops.common.connect")
+    @patch("junos_ops_mcp.server.upgrade.dry_run")
+    @patch("junos_ops_mcp.server.upgrade.check_running_package")
+    def test_ready_for_upgrade(self, mock_check, mock_dry, mock_connect, mock_config):
+        """アップグレード準備完了の場合"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = (False, mock_dev)
+        mock_check.return_value = False
+        mock_dry.return_value = True
+        result = check_upgrade_readiness("rt1.example.jp")
+        assert "READY" in result
+        assert "NOT READY" not in result
+
+    @patch("junos_ops.common.connect")
+    @patch("junos_ops_mcp.server.upgrade.dry_run")
+    @patch("junos_ops_mcp.server.upgrade.check_running_package")
+    def test_not_ready_for_upgrade(self, mock_check, mock_dry, mock_connect, mock_config):
+        """アップグレード準備未完了の場合"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = (False, mock_dev)
+        mock_check.return_value = False
+        mock_dry.return_value = False
+        result = check_upgrade_readiness("rt1.example.jp")
+        assert "NOT READY" in result
+
+
+# --- compare_version ---
+
+
+class TestCompareVersion:
+    @patch("junos_ops_mcp.server.upgrade.compare_version")
+    def test_left_greater(self, mock_cmp):
+        """left > right の場合"""
+        mock_cmp.return_value = 1
+        result = compare_version("23.2R1", "22.4R3")
+        assert "23.2R1 > 22.4R3" in result
+
+    @patch("junos_ops_mcp.server.upgrade.compare_version")
+    def test_equal(self, mock_cmp):
+        """left == right の場合"""
+        mock_cmp.return_value = 0
+        result = compare_version("22.4R3", "22.4R3")
+        assert "22.4R3 == 22.4R3" in result
+
+    @patch("junos_ops_mcp.server.upgrade.compare_version")
+    def test_left_less(self, mock_cmp):
+        """left < right の場合"""
+        mock_cmp.return_value = -1
+        result = compare_version("22.4R3", "23.2R1")
+        assert "22.4R3 < 23.2R1" in result
+
+    @patch("junos_ops_mcp.server.upgrade.compare_version")
+    def test_none_result(self, mock_cmp):
+        """無効なバージョン文字列の場合"""
+        mock_cmp.return_value = None
+        result = compare_version("invalid", "22.4R3")
+        assert "Error" in result
+        assert "None" in result
+
+
+# --- get_package_info ---
+
+
+class TestGetPackageInfo:
+    def test_returns_package_info(self, mock_config):
+        """パッケージ情報を正常に取得"""
+        with patch("junos_ops_mcp.server.upgrade.get_model_file") as mock_file, \
+             patch("junos_ops_mcp.server.upgrade.get_model_hash") as mock_hash:
+            mock_file.return_value = "junos-ex2300-22.4R3-S6.5.tgz"
+            mock_hash.return_value = "abc123def456"
+            result = get_package_info("rt1.example.jp", "EX2300-24T")
+            assert "rt1.example.jp" in result
+            assert "EX2300-24T" in result
+            assert "junos-ex2300-22.4R3-S6.5.tgz" in result
+            assert "abc123def456" in result
+
+    def test_hostname_not_found(self, mock_config):
+        """config にないホスト名でエラー"""
+        result = get_package_info("unknown-host", "EX2300-24T")
+        assert "not found in config" in result
+
+    def test_model_not_configured(self, mock_config):
+        """モデルが未設定の場合のエラー"""
+        with patch("junos_ops_mcp.server.upgrade.get_model_file") as mock_file:
+            mock_file.side_effect = Exception("model 'UNKNOWN' not found")
+            result = get_package_info("rt1.example.jp", "UNKNOWN")
+            assert "Error" in result
