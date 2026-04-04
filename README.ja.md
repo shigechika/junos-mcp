@@ -1,6 +1,6 @@
 # junos-mcp
 
-[English README](README.md)
+[English](README.md) | 日本語
 
 [junos-ops](https://github.com/shigechika/junos-ops) 用の MCP (Model Context Protocol) サーバーです。
 
