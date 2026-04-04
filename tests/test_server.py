@@ -259,7 +259,7 @@ class TestConnectAndRun:
     @patch("junos_ops.common.connect")
     def test_connection_failure(self, mock_connect, mock_config):
         """接続失敗時のエラーメッセージ"""
-        mock_connect.return_value = (True, None)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": False, "dev": None, "error": "ConnectError", "error_message": "mock connect error"}
         result = _connect_and_run("rt1.example.jp", "", lambda h, d: "ok")
         assert "Connection" in result
 
@@ -267,7 +267,7 @@ class TestConnectAndRun:
     def test_successful_operation(self, mock_connect, mock_config):
         """正常な操作の実行"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = _connect_and_run(
             "rt1.example.jp", "", lambda h, d: f"success: {h}"
         )
@@ -278,7 +278,7 @@ class TestConnectAndRun:
     def test_device_closed_on_exception(self, mock_connect, mock_config):
         """例外発生時もデバイス接続が閉じられる"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
 
         def raise_error(h, d):
             raise RuntimeError("test error")
@@ -302,7 +302,7 @@ class TestGetDeviceFacts:
             "version": "22.4R3-S6.5",
             "serialnumber": "TEST123",
         }
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = get_device_facts("rt1.example.jp")
         assert "rt1.example.jp" in result
         assert "EX2300-24T" in result
@@ -316,23 +316,28 @@ class TestGetVersion:
     @patch("junos_ops.common.connect")
     @patch("junos_mcp.server.upgrade.show_version")
     def test_returns_version_output(self, mock_show, mock_connect, mock_config):
-        """バージョン情報を返す"""
+        """バージョン情報を返す (junos-ops 0.14.0+ dict return)"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_show.return_value = False
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_show.return_value = {
+            "hostname": "rt1",
+            "model": "EX2300-24T",
+            "running": "22.4R3-S6.5",
+            "planning": "22.4R3-S6.5",
+            "pending": None,
+            "running_vs_planning": 0,
+            "running_vs_pending": None,
+            "commit": None,
+            "rescue_config_epoch": None,
+            "config_changed_after_install": False,
+            "local_package": True,
+            "remote_package": True,
+            "reboot_scheduled": None,
+        }
         result = get_version("rt1.example.jp")
         assert "rt1.example.jp" in result
+        assert "EX2300-24T" in result
         mock_show.assert_called_once()
-
-    @patch("junos_ops.common.connect")
-    @patch("junos_mcp.server.upgrade.show_version")
-    def test_shows_warning_on_error(self, mock_show, mock_connect, mock_config):
-        """show_version がエラーの場合に警告を表示"""
-        mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_show.return_value = True  # エラー
-        result = get_version("rt1.example.jp")
-        assert "WARNING" in result
 
 
 # --- run_show_command ---
@@ -344,7 +349,7 @@ class TestRunShowCommand:
         """CLI コマンドの出力を返す"""
         mock_dev = MagicMock()
         mock_dev.cli.return_value = "BGP is running\nPeer: 192.0.2.1"
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command("rt1.example.jp", "show bgp summary")
         assert "rt1.example.jp" in result
         assert "show bgp summary" in result
@@ -356,7 +361,7 @@ class TestRunShowCommand:
         """コマンド実行エラーのハンドリング"""
         mock_dev = MagicMock()
         mock_dev.cli.side_effect = Exception("RPC error")
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command("rt1.example.jp", "show invalid")
         assert "Error" in result
         assert "RPC error" in result
@@ -371,10 +376,17 @@ class TestListRemoteFiles:
     def test_returns_file_list(self, mock_ls, mock_connect, mock_config):
         """ファイル一覧を返す"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_ls.return_value = {"path": "/var/tmp", "files": {}}
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_ls.return_value = {
+            "hostname": "rt1.example.jp",
+            "path": "/var/tmp",
+            "files": [],
+            "file_count": 0,
+            "format": "long",
+        }
         result = list_remote_files("rt1.example.jp")
         assert "rt1.example.jp" in result
+        assert "/var/tmp" in result
         mock_ls.assert_called_once()
 
     @patch("junos_ops.common.connect")
@@ -382,8 +394,14 @@ class TestListRemoteFiles:
     def test_restores_list_format(self, mock_ls, mock_connect, mock_config):
         """list_format が元の値に復元される"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_ls.return_value = {}
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_ls.return_value = {
+            "hostname": "rt1.example.jp",
+            "path": "/var/tmp",
+            "files": [],
+            "file_count": 0,
+            "format": "long",
+        }
         common.args.list_format = "short"
         list_remote_files("rt1.example.jp")
         assert common.args.list_format == "short"
@@ -393,13 +411,33 @@ class TestListRemoteFiles:
 
 
 class TestCheckUpgradeReadiness:
+    def _running_match(self, match: bool):
+        return {
+            "hostname": "rt1.example.jp",
+            "running": "22.4R3-S6.5",
+            "expected_file": "junos-arm-32-22.4R3-S6.5.tgz",
+            "match": match,
+        }
+
+    def _dry_run(self, ok: bool):
+        return {
+            "hostname": "rt1.example.jp",
+            "model": "EX2300-24T",
+            "local_file": "junos-arm-32-22.4R3-S6.5.tgz",
+            "planning_hash": "abc",
+            "algo": "md5",
+            "local_package": ok,
+            "remote_package": ok,
+            "ok": ok,
+        }
+
     @patch("junos_ops.common.connect")
     @patch("junos_mcp.server.upgrade.check_running_package")
     def test_already_running_target(self, mock_check, mock_connect, mock_config):
         """既にターゲットバージョンで稼働中の場合"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_check.return_value = True
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_check.return_value = self._running_match(True)
         result = check_upgrade_readiness("rt1.example.jp")
         assert "already running the target version" in result
         assert "rt1.example.jp" in result
@@ -410,9 +448,9 @@ class TestCheckUpgradeReadiness:
     def test_ready_for_upgrade(self, mock_check, mock_dry, mock_connect, mock_config):
         """アップグレード準備完了の場合"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_check.return_value = False
-        mock_dry.return_value = True
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_check.return_value = self._running_match(False)
+        mock_dry.return_value = self._dry_run(True)
         result = check_upgrade_readiness("rt1.example.jp")
         assert "READY" in result
         assert "NOT READY" not in result
@@ -423,9 +461,9 @@ class TestCheckUpgradeReadiness:
     def test_not_ready_for_upgrade(self, mock_check, mock_dry, mock_connect, mock_config):
         """アップグレード準備未完了の場合"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_check.return_value = False
-        mock_dry.return_value = False
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_check.return_value = self._running_match(False)
+        mock_dry.return_value = self._dry_run(False)
         result = check_upgrade_readiness("rt1.example.jp")
         assert "NOT READY" in result
 
@@ -521,7 +559,7 @@ class TestRunShowCommands:
         """複数コマンドを順次実行"""
         mock_dev = MagicMock()
         mock_dev.cli.side_effect = ["output1", "output2"]
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_commands(
             "rt1.example.jp", ["show version", "show interfaces"]
         )
@@ -537,7 +575,7 @@ class TestRunShowCommands:
         """一部コマンドが失敗しても他は実行される"""
         mock_dev = MagicMock()
         mock_dev.cli.side_effect = ["ok", Exception("RPC error")]
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_commands(
             "rt1.example.jp", ["show version", "show bad"]
         )
@@ -549,7 +587,7 @@ class TestRunShowCommands:
     def test_empty_commands(self, mock_connect, mock_config):
         """空のコマンドリスト"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_commands("rt1.example.jp", [])
         assert "rt1.example.jp" in result
         mock_dev.cli.assert_not_called()
@@ -565,7 +603,7 @@ class TestRunShowCommandBatch:
         mock_config.read_dict({"rt2.example.jp": {"host": "192.0.2.2"}})
         mock_dev = MagicMock()
         mock_dev.cli.return_value = "BGP running"
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command_batch(
             ["rt1.example.jp", "rt2.example.jp"],
             "show bgp summary",
@@ -580,7 +618,7 @@ class TestRunShowCommandBatch:
         """1台でも動作する"""
         mock_dev = MagicMock()
         mock_dev.cli.return_value = "ok"
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command_batch(
             ["rt1.example.jp"], "show version", max_workers=1
         )
@@ -606,7 +644,7 @@ class TestGetConfig:
         mock_config_elem = MagicMock()
         mock_config_elem.text = "set system host-name rt1\n"
         mock_dev.rpc.get_config.return_value = mock_config_elem
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = get_config("rt1.example.jp")
         assert "rt1.example.jp" in result
         assert "host-name" in result
@@ -616,7 +654,7 @@ class TestGetConfig:
         """RPC エラーのハンドリング"""
         mock_dev = MagicMock()
         mock_dev.rpc.get_config.side_effect = Exception("permission denied")
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = get_config("rt1.example.jp")
         assert "Error" in result
         assert "permission denied" in result
@@ -630,7 +668,7 @@ class TestGetConfigDiff:
     def test_returns_diff(self, mock_connect, mock_config):
         """rollback との差分を表示"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = "[edit system]\n-  host-name old;\n+  host-name new;"
@@ -645,7 +683,7 @@ class TestGetConfigDiff:
     def test_no_diff(self, mock_connect, mock_config):
         """差分なしの場合"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = None
@@ -658,36 +696,53 @@ class TestGetConfigDiff:
 
 
 class TestCollectRsi:
-    @patch("junos_mcp.server.rsi.get_support_information")
+    @patch("junos_mcp.server.rsi.collect_rsi")
     @patch("junos_ops.common.connect")
-    def test_collects_scf_and_rsi(self, mock_connect, mock_rsi, mock_config, tmp_path):
-        """SCF と RSI を収集してファイル保存"""
+    def test_collects_scf_and_rsi(self, mock_connect, mock_rsi_collect, mock_config, tmp_path):
+        """SCF と RSI を収集してファイル保存 (junos-ops 0.14.0+ dict core)"""
         mock_dev = MagicMock()
-        mock_dev.cli.return_value = "set system host-name rt1"
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
 
-        from lxml import etree
-        rsi_elem = etree.fromstring("<output>RSI content here</output>")
-        mock_rsi.return_value = rsi_elem
+        scf_path = str(tmp_path / "rt1.example.jp.SCF")
+        rsi_path = str(tmp_path / "rt1.example.jp.RSI")
+        mock_rsi_collect.return_value = {
+            "hostname": "rt1.example.jp",
+            "ok": True,
+            "scf": {"path": scf_path, "bytes": 120, "command": "show configuration | display set"},
+            "rsi": {"path": rsi_path, "bytes": 4096},
+            "rsi_dir": str(tmp_path) + "/",
+            "error": None,
+            "error_message": None,
+        }
 
         result = collect_rsi("rt1.example.jp", output_dir=str(tmp_path))
         assert "SCF saved" in result
         assert "RSI saved" in result
-        assert (tmp_path / "rt1.example.jp.SCF").exists()
-        assert (tmp_path / "rt1.example.jp.RSI").exists()
+        assert scf_path in result
+        assert rsi_path in result
 
-    @patch("junos_mcp.server.rsi.get_support_information")
+    @patch("junos_mcp.server.rsi.collect_rsi")
     @patch("junos_ops.common.connect")
-    def test_rsi_failure(self, mock_connect, mock_rsi, mock_config, tmp_path):
-        """RSI 取得失敗時のハンドリング"""
+    def test_rsi_failure(self, mock_connect, mock_rsi_collect, mock_config, tmp_path):
+        """RSI 取得失敗時のハンドリング (scf 成功, rsi_rpc 失敗)"""
         mock_dev = MagicMock()
-        mock_dev.cli.return_value = "config"
-        mock_connect.return_value = (False, mock_dev)
-        mock_rsi.return_value = None
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+
+        scf_path = str(tmp_path / "rt1.example.jp.SCF")
+        mock_rsi_collect.return_value = {
+            "hostname": "rt1.example.jp",
+            "ok": False,
+            "scf": {"path": scf_path, "bytes": 50, "command": "show configuration | display set"},
+            "rsi": None,
+            "rsi_dir": str(tmp_path) + "/",
+            "error": "rsi_rpc",
+            "error_message": "RPC timeout",
+        }
 
         result = collect_rsi("rt1.example.jp", output_dir=str(tmp_path))
         assert "SCF saved" in result
         assert "RSI failed" in result
+        assert "RPC timeout" in result
 
     def test_hostname_not_found(self, mock_config):
         """config にないホスト名でエラー"""
@@ -699,18 +754,25 @@ class TestCollectRsi:
 
 
 class TestCollectRsiBatch:
-    @patch("junos_mcp.server.rsi.get_support_information")
+    @patch("junos_mcp.server.rsi.collect_rsi")
     @patch("junos_ops.common.connect")
-    def test_multiple_hosts(self, mock_connect, mock_rsi, mock_config, tmp_path):
+    def test_multiple_hosts(self, mock_connect, mock_rsi_collect, mock_config, tmp_path):
         """複数ホストで並列 RSI 収集"""
         mock_config.read_dict({"rt2.example.jp": {"host": "192.0.2.2"}})
         mock_dev = MagicMock()
-        mock_dev.cli.return_value = "config"
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
 
-        from lxml import etree
-        rsi_elem = etree.fromstring("<output>RSI</output>")
-        mock_rsi.return_value = rsi_elem
+        def _make_result(hostname):
+            return {
+                "hostname": hostname,
+                "ok": True,
+                "scf": {"path": f"{tmp_path}/{hostname}.SCF", "bytes": 10, "command": "show configuration | display set"},
+                "rsi": {"path": f"{tmp_path}/{hostname}.RSI", "bytes": 100},
+                "rsi_dir": str(tmp_path) + "/",
+                "error": None,
+                "error_message": None,
+            }
+        mock_rsi_collect.side_effect = lambda h, d: _make_result(h)
 
         result = collect_rsi_batch(
             ["rt1.example.jp", "rt2.example.jp"],
@@ -743,7 +805,7 @@ class TestPushConfig:
     def test_dry_run_default(self, mock_connect, mock_config):
         """dry_run（デフォルト）で diff 表示のみ"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = "[edit system]\n+  host-name new;"
@@ -763,7 +825,7 @@ class TestPushConfig:
     def test_no_changes(self, mock_connect, mock_config):
         """変更なしの場合"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = None
@@ -779,7 +841,7 @@ class TestPushConfig:
     def test_commit_confirmed_success(self, mock_connect, mock_health, mock_config):
         """commit confirmed + ヘルスチェック成功"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         mock_health.return_value = False  # ヘルスチェック成功
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
@@ -800,7 +862,7 @@ class TestPushConfig:
     def test_health_check_failure(self, mock_connect, mock_health, mock_config):
         """ヘルスチェック失敗で自動ロールバック待ち"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         mock_health.return_value = True  # ヘルスチェック失敗
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
@@ -822,7 +884,7 @@ class TestPushConfig:
         set_file = tmp_path / "test.set"
         set_file.write_text("set system host-name rt1\nset system domain-name example.jp\n")
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = "[edit system]\n+  domain-name example.jp;"
@@ -838,7 +900,7 @@ class TestPushConfig:
     def test_lock_failure(self, mock_connect, mock_config):
         """config ロック取得失敗"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.lock.side_effect = Exception("locked by another user")
@@ -853,14 +915,77 @@ class TestPushConfig:
 # --- copy_package ---
 
 
+def _copy_result(ok: bool, skipped: bool = False):
+    return {
+        "hostname": "rt1.example.jp",
+        "ok": ok,
+        "skipped": skipped,
+        "skip_reason": "already_running" if skipped else None,
+        "dry_run": True,
+        "local_file": None,
+        "remote_path": "/var/tmp",
+        "checksum_algo": "md5",
+        "storage_cleanup": None,
+        "snapshot_delete": None,
+        "steps": [],
+        "error": None if ok else "scp_failed",
+    }
+
+
+def _install_result(ok: bool, skipped: bool = False):
+    return {
+        "hostname": "rt1.example.jp",
+        "ok": ok,
+        "skipped": skipped,
+        "skip_reason": "already_running" if skipped else None,
+        "dry_run": True,
+        "pending": None,
+        "planning": None,
+        "compare": None,
+        "rollback_result": None,
+        "copy_result": None,
+        "rescue_save": None,
+        "install_message": None,
+        "steps": [],
+        "error": None if ok else "sw_install_failed",
+    }
+
+
+def _rollback_result(ok: bool):
+    return {
+        "hostname": "rt1.example.jp",
+        "ok": ok,
+        "dry_run": False,
+        "rpc_output": None,
+        "message": "",
+        "error": None if ok else "unrecognized_response",
+    }
+
+
+def _reboot_result(code: int):
+    return {
+        "hostname": "rt1.example.jp",
+        "ok": code == 0,
+        "code": code,
+        "dry_run": True,
+        "reboot_at": "2601020304",
+        "existing_schedule": None,
+        "cleared_existing": False,
+        "reinstall_result": None,
+        "message": None,
+        "steps": [],
+        "error": None if code == 0 else "reboot_failed",
+    }
+
+
 class TestCopyPackage:
     @patch("junos_mcp.server.upgrade.copy")
     @patch("junos_ops.common.connect")
     def test_dry_run(self, mock_connect, mock_copy, mock_config):
         """dry_run でコピー内容を表示"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_copy.return_value = False
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_copy.return_value = _copy_result(ok=True)
         result = copy_package("rt1.example.jp")
         assert "rt1.example.jp" in result
         assert "OK" in result
@@ -871,8 +996,8 @@ class TestCopyPackage:
     def test_copy_failure(self, mock_connect, mock_copy, mock_config):
         """コピー失敗"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_copy.return_value = True
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_copy.return_value = _copy_result(ok=False)
         result = copy_package("rt1.example.jp", dry_run=False)
         assert "FAILED" in result
 
@@ -886,8 +1011,8 @@ class TestInstallPackage:
     def test_dry_run(self, mock_connect, mock_install, mock_config):
         """dry_run でインストール内容を表示"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_install.return_value = False
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_install.return_value = _install_result(ok=True)
         result = install_package("rt1.example.jp")
         assert "rt1.example.jp" in result
         assert "OK" in result
@@ -897,10 +1022,23 @@ class TestInstallPackage:
     def test_install_failure(self, mock_connect, mock_install, mock_config):
         """インストール失敗"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_install.return_value = True
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_install.return_value = _install_result(ok=False)
         result = install_package("rt1.example.jp", dry_run=False)
         assert "FAILED" in result
+
+    @patch("junos_mcp.server.upgrade.install")
+    @patch("junos_ops.common.connect")
+    def test_sets_subcommand_upgrade(self, mock_connect, mock_install, mock_config):
+        """install_package sets args.subcommand='upgrade' so install() picks
+        the right remote_check branch (regression guard for the bug fixed
+        in junos-ops f1beaaf)."""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_install.return_value = _install_result(ok=True)
+        install_package("rt1.example.jp")
+        # After the tool runs, common.args.subcommand should have been set.
+        assert common.args.subcommand == "upgrade"
 
 
 # --- rollback_package ---
@@ -912,7 +1050,7 @@ class TestRollbackPackage:
     def test_no_pending(self, mock_connect, mock_pending, mock_config):
         """pending version なしでスキップ"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         mock_pending.return_value = None
         result = rollback_package("rt1.example.jp")
         assert "skipped" in result
@@ -923,9 +1061,9 @@ class TestRollbackPackage:
     def test_rollback_success(self, mock_connect, mock_pending, mock_rollback, mock_config):
         """ロールバック成功"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         mock_pending.return_value = "22.4R3-S6.5"
-        mock_rollback.return_value = False
+        mock_rollback.return_value = _rollback_result(ok=True)
         result = rollback_package("rt1.example.jp")
         assert "22.4R3-S6.5" in result
         assert "OK" in result
@@ -936,9 +1074,9 @@ class TestRollbackPackage:
     def test_rollback_failure(self, mock_connect, mock_pending, mock_rollback, mock_config):
         """ロールバック失敗"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         mock_pending.return_value = "22.4R3-S6.5"
-        mock_rollback.return_value = True
+        mock_rollback.return_value = _rollback_result(ok=False)
         result = rollback_package("rt1.example.jp", dry_run=False)
         assert "FAILED" in result
 
@@ -957,8 +1095,8 @@ class TestScheduleReboot:
     def test_dry_run(self, mock_connect, mock_reboot, mock_config):
         """dry_run でリブートスケジュールを表示"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_reboot.return_value = 0
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_reboot.return_value = _reboot_result(code=0)
         result = schedule_reboot("rt1.example.jp", "2601020304")
         assert "rt1.example.jp" in result
         assert "OK" in result
@@ -966,9 +1104,10 @@ class TestScheduleReboot:
     @patch("junos_mcp.server.upgrade.reboot")
     @patch("junos_ops.common.connect")
     def test_reboot_failure(self, mock_connect, mock_reboot, mock_config):
-        """リブートスケジュール失敗"""
+        """リブートスケジュール失敗 (exit code 4 = ConnectError on reboot RPC)"""
         mock_dev = MagicMock()
-        mock_connect.return_value = (False, mock_dev)
-        mock_reboot.return_value = 4
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_reboot.return_value = _reboot_result(code=4)
         result = schedule_reboot("rt1.example.jp", "2601020304", dry_run=False)
         assert "FAILED" in result
+        assert "code=4" in result
