@@ -359,19 +359,19 @@ def get_package_info(hostname: str, model: str, config_path: str = "") -> str:
 
 
 @mcp.tool()
-def get_config(hostname: str, format: str = "text", config_path: str = "") -> str:
+def get_config(hostname: str, output_format: str = "text", config_path: str = "") -> str:
     """Get device configuration.
 
     Args:
         hostname: Target device hostname (must exist in config.ini)
-        format: Output format - "text" (default), "set", or "xml"
+        output_format: Output format - "text" (default), "set", or "xml"
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
         try:
-            options = {"format": format}
+            options = {"format": output_format}
             config = dev.rpc.get_config(options=options)
-            if format == "xml":
+            if output_format == "xml":
                 return f"# {hostname}\n{etree.tostring(config, pretty_print=True).decode()}"
             return f"# {hostname}\n{config.text.strip()}"
         except Exception as e:
