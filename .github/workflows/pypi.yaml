@@ -69,19 +69,21 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
-      - name: Update server.json version
+
+      - name: Patch server.json version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/g" server.json
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
+
       - name: Install mcp-publisher
         run: |
-          curl -fsSL https://registry.modelcontextprotocol.io/install.sh | bash
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          curl -sL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz | tar xz
+          sudo mv mcp-publisher /usr/local/bin/
+
       - name: Publish to MCP Registry
-        run: mcp-publisher publish --yes
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
 
   github-release:
     needs: publish
