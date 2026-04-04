@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "junos-ops-mcp"
+name = "junos-mcp"
 dynamic = ["version"]
 description = "MCP server for junos-ops: expose Juniper device operations to AI assistants"
 readme = "README.md"
@@ -32,8 +32,16 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov"]
 
+[project.scripts]
+junos-mcp = "junos_mcp.server:mcp.run"
+
+[project.urls]
+Homepage = "https://github.com/shigechika/junos-mcp"
+Repository = "https://github.com/shigechika/junos-mcp"
+Issues = "https://github.com/shigechika/junos-mcp/issues"
+
 [tool.setuptools]
-packages = ["junos_ops_mcp"]
+packages = ["junos_mcp"]
 
 [tool.setuptools.dynamic]
-version = {attr = "junos_ops_mcp.__version__"}
+version = {attr = "junos_mcp.__version__"}
