@@ -148,8 +148,8 @@ Claude Desktop や Claude Code からリモートアクセスできます。
 
 ```mermaid
 graph TB
-    A[junos-mcp<br/>リモートサーバー] -- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>プロキシ]
-    B -- "STDIO" --> C[Claude Desktop<br/>Claude Code]
+    A[junos-mcp<br/>リモートサーバー] <-- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>プロキシ]
+    B <-- "STDIO" --> C[Claude Desktop<br/>Claude Code]
 ```
 
 **手順 1: リモートサーバーで junos-mcp を Streamable HTTP で起動**

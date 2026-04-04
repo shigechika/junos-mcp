@@ -154,8 +154,8 @@ from Claude Desktop or Claude Code through
 
 ```mermaid
 graph TB
-    A[junos-mcp<br/>remote server] -- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>proxy]
-    B -- "STDIO" --> C[Claude Desktop<br/>Claude Code]
+    A[junos-mcp<br/>remote server] <-- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>proxy]
+    B <-- "STDIO" --> C[Claude Desktop<br/>Claude Code]
 ```
 
 **Step 1: Start junos-mcp with Streamable HTTP on the remote server**
