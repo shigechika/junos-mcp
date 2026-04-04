@@ -1,12 +1,11 @@
 """MCP server exposing junos-ops device operations.
 
-Provides read-only tools for Juniper Networks device management:
-get_device_facts, get_version, run_show_command, list_remote_files,
-check_upgrade_readiness, compare_version, get_package_info.
+Provides 19 tools for Juniper Networks device management: device info,
+CLI execution, config management, firmware upgrade, and RSI/SCF collection.
 
-STDIO transport is used for JSON-RPC communication. All junos-ops
-print() output is captured via contextlib.redirect_stdout to avoid
-corrupting the transport.
+Supports STDIO and Streamable HTTP transports. All junos-ops print()
+output is captured via contextlib.redirect_stdout to avoid corrupting
+the STDIO JSON-RPC channel.
 """
 
 import argparse
@@ -765,4 +764,11 @@ def schedule_reboot(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import argparse as _ap
+
+    _parser = _ap.ArgumentParser()
+    _parser.add_argument(
+        "--transport", choices=["stdio", "streamable-http"], default="stdio"
+    )
+    _args = _parser.parse_args()
+    mcp.run(transport=_args.transport)

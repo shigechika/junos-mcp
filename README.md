@@ -146,6 +146,39 @@ Add to Claude Desktop config file:
 
 Restart Claude Desktop after editing.
 
+### Remote Access with OAuth (via mcp-stdio)
+
+junos-mcp supports Streamable HTTP transport, enabling remote access
+from Claude Desktop or Claude Code through
+[mcp-stdio](https://github.com/shigechika/mcp-stdio) as an OAuth proxy.
+
+```mermaid
+graph TB
+    A[junos-mcp<br/>remote server] -- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>proxy]
+    B -- "STDIO" --> C[Claude Desktop<br/>Claude Code]
+```
+
+**Step 1: Start junos-mcp with Streamable HTTP on the remote server**
+
+```bash
+JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  python -m junos_mcp --transport streamable-http
+```
+
+The server listens on `http://localhost:8000/mcp` by default.
+
+**Step 2: Register mcp-stdio as the MCP server on your local machine**
+
+```bash
+claude mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
+```
+
+mcp-stdio handles OAuth 2.1 authentication (RFC 8414 discovery, RFC 7591
+dynamic client registration, PKCE) and relays STDIO ↔ Streamable HTTP.
+
+See [mcp-stdio README](https://github.com/shigechika/mcp-stdio) for
+detailed configuration including OAuth provider setup.
+
 ### MCP Inspector (development)
 
 ```bash

@@ -140,6 +140,37 @@ Claude Desktop の設定ファイルに追加します:
 
 設定変更後は Claude Desktop を再起動してください。
 
+### リモートアクセス（OAuth 対応、mcp-stdio 経由）
+
+junos-mcp は Streamable HTTP トランスポートに対応しており、
+[mcp-stdio](https://github.com/shigechika/mcp-stdio) を OAuth プロキシとして使うことで
+Claude Desktop や Claude Code からリモートアクセスできます。
+
+```mermaid
+graph TB
+    A[junos-mcp<br/>リモートサーバー] -- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>プロキシ]
+    B -- "STDIO" --> C[Claude Desktop<br/>Claude Code]
+```
+
+**手順 1: リモートサーバーで junos-mcp を Streamable HTTP で起動**
+
+```bash
+JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  python -m junos_mcp --transport streamable-http
+```
+
+デフォルトで `http://localhost:8000/mcp` でリッスンします。
+
+**手順 2: ローカルマシンで mcp-stdio を MCP サーバーとして登録**
+
+```bash
+claude mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
+```
+
+mcp-stdio が OAuth 2.1 認証（RFC 8414 ディスカバリ、RFC 7591 動的クライアント登録、PKCE）を処理し、STDIO ↔ Streamable HTTP を中継します。
+
+OAuth プロバイダの設定を含む詳細は [mcp-stdio README](https://github.com/shigechika/mcp-stdio) を参照してください。
+
 ### MCP Inspector（開発用）
 
 ```bash
