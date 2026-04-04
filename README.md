@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.shigechika/junos-mcp -->
+
 # junos-mcp
 
 English | [日本語](README.ja.md)
