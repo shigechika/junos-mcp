@@ -48,6 +48,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   publish:
     needs: testpypi
@@ -61,6 +62,8 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   mcp-registry:
     needs: publish
@@ -86,7 +89,7 @@ jobs:
           mcp-publisher publish
 
   github-release:
-    needs: publish
+    needs: [publish, mcp-registry]
     runs-on: ubuntu-latest
     permissions:
       contents: write
