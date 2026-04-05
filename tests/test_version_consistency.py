@@ -11,7 +11,7 @@ in sync:
 
 2. ``server.json`` — the MCP Registry metadata file. It carries the
    version twice (top-level ``version`` and ``packages[0].version``).
-   The release workflow (``.github/workflows/pypi.yaml``) patches both
+   The release workflow (``.github/workflows/release.yml``) patches both
    fields from the git tag at publish time, but the committed copy
    still has to agree with ``__init__.py`` so that:
 
