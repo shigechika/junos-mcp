@@ -8,7 +8,6 @@ import pytest
 
 from junos_ops import common
 from junos_mcp.server import (
-    _capture_stdout,
     _connect_and_run,
     _ensure_config,
     _init_globals,
@@ -172,52 +171,6 @@ class TestResolveConfigPath:
         result = _resolve_config_path("")
         # get_default_config() の結果と一致するはず
         assert result == common.get_default_config()
-
-
-# --- _capture_stdout ---
-
-
-class TestCaptureStdout:
-    def test_captures_print_output(self):
-        """print() の出力がキャプチャされる"""
-        def func():
-            print("hello world")
-            return 42
-
-        result, captured = _capture_stdout(func)
-        assert result == 42
-        assert "hello world" in captured
-
-    def test_captures_multiple_prints(self):
-        """複数の print() がすべてキャプチャされる"""
-        def func():
-            print("line 1")
-            print("line 2")
-            return 0
-
-        result, captured = _capture_stdout(func)
-        assert result == 0
-        assert "line 1" in captured
-        assert "line 2" in captured
-
-    def test_passes_args_and_kwargs(self):
-        """引数が正しく渡される"""
-        def func(a, b, key=None):
-            print(f"{a} {b} {key}")
-            return a + b
-
-        result, captured = _capture_stdout(func, 1, 2, key="test")
-        assert result == 3
-        assert "1 2 test" in captured
-
-    def test_empty_stdout(self):
-        """stdout に何も出力しない関数"""
-        def func():
-            return "no output"
-
-        result, captured = _capture_stdout(func)
-        assert result == "no output"
-        assert captured == ""
 
 
 # --- _ensure_config ---
@@ -842,7 +795,13 @@ class TestPushConfig:
         """commit confirmed + ヘルスチェック成功"""
         mock_dev = MagicMock()
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
-        mock_health.return_value = False  # ヘルスチェック成功
+        mock_health.return_value = {
+            "ok": True,
+            "passed_command": "ping ...",
+            "commands": [],
+            "steps": [],
+            "message": "health check passed",
+        }
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = "[edit]\n+  host-name new;"
@@ -863,7 +822,13 @@ class TestPushConfig:
         """ヘルスチェック失敗で自動ロールバック待ち"""
         mock_dev = MagicMock()
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
-        mock_health.return_value = True  # ヘルスチェック失敗
+        mock_health.return_value = {
+            "ok": False,
+            "passed_command": None,
+            "commands": [],
+            "steps": [{"action": "health_check_error", "message": "\tno packets received"}],
+            "message": "\thealth check: ping ...\n\tno packets received",
+        }
         with patch("junos_mcp.server.Config") as MockConfig:
             mock_cu = MagicMock()
             mock_cu.diff.return_value = "[edit]\n+  bad-config;"

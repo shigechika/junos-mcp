@@ -5,20 +5,16 @@ CLI execution, config management, firmware upgrade, and RSI/SCF collection.
 
 Supports STDIO and Streamable HTTP transports.
 
-junos-ops 0.14.0 migrated its core functions to dict returns
-(connect, read_config, copy, install, rollback, reboot, load_config,
-list_remote_path, rsi.collect_rsi, ...). MCP tools use those dicts
-directly for error detection and status reporting. Human-readable
-formatting still goes through the ``junos_ops.display`` layer, which
-prints to stdout — we capture that text with ``contextlib.redirect_stdout``
-so the MCP STDIO JSON-RPC channel is never corrupted, and so we also
-sweep up the last few pre-v0.14.0 direct prints that remain in
-``check_local_package`` / ``check_remote_package`` / ``clear_reboot``.
+As of junos-mcp 0.5.1 this server uses junos-ops ≥ 0.14.1, which
+guarantees that every core function returns a structured ``dict`` and
+does not print to stdout. MCP tools build responses by calling the
+core function and then ``junos_ops.display.format_*(result)`` to get
+rendered text as a string — no ``contextlib.redirect_stdout`` is
+needed anywhere in this module, so the MCP STDIO JSON-RPC channel is
+safe by construction.
 """
 
 import argparse
-import contextlib
-import io
 import os
 import os.path
 from pprint import pformat
@@ -83,39 +79,6 @@ def _init_globals(config_path: str = "") -> str | None:
     if not cfg_result["ok"]:
         return f"Config error: {cfg_result['error']}"
     return None
-
-
-def _run_with_display(core_func, display_func, *args, **kwargs):
-    """Run a junos-ops core function and pipe its result through the display layer.
-
-    junos-ops 0.14.0+ core functions return structured dicts and do not
-    print. The ``display`` layer renders those dicts for humans by
-    printing to stdout. This helper runs both under a stdout redirect
-    so the MCP response string is built from the captured text — the
-    redirect also catches the few remaining direct ``print()`` calls
-    in ``check_local_package`` / ``check_remote_package`` / ``clear_reboot``
-    that have not yet been migrated to dict returns.
-
-    :return: ``(result_dict, captured_text)``.
-    """
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        result = core_func(*args, **kwargs)
-        display_func(result)
-    return result, buf.getvalue()
-
-
-def _capture_stdout(func, *args, **kwargs):
-    """Legacy helper: run ``func`` with stdout captured.
-
-    Kept for a handful of paths that do not yet have a display counterpart
-    (e.g. ``get_pending_version``) or that only need stdout protection.
-    Prefer :func:`_run_with_display` for dict-returning core functions.
-    """
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        result = func(*args, **kwargs)
-    return result, buf.getvalue()
 
 
 def _ensure_config(config_path: str) -> str | None:
@@ -192,10 +155,8 @@ def get_version(hostname: str, config_path: str = "") -> str:
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
-        result, captured = _run_with_display(
-            upgrade.show_version, display.print_version, hostname, dev
-        )
-        return f"# {hostname}\n{captured.strip()}"
+        result = upgrade.show_version(hostname, dev)
+        return f"# {hostname}\n{display.format_version(result)}"
 
     return _connect_and_run(hostname, config_path, _operation)
 
@@ -279,14 +240,12 @@ def list_remote_files(hostname: str, config_path: str = "") -> str:
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
-        # list_format controls short vs long rendering in display.print_list_remote.
+        # list_format controls short vs long rendering in format_list_remote.
         original_format = common.args.list_format
         common.args.list_format = "long"
         try:
-            result, captured = _run_with_display(
-                upgrade.list_remote_path, display.print_list_remote, hostname, dev
-            )
-            return f"# {hostname}\n{captured.strip()}"
+            result = upgrade.list_remote_path(hostname, dev)
+            return f"# {hostname}\n{display.format_list_remote(result)}"
         finally:
             common.args.list_format = original_format
 
@@ -313,15 +272,13 @@ def check_upgrade_readiness(hostname: str, config_path: str = "") -> str:
                 f"Device is already running the target version "
                 f"({running['running']} matches {running['expected_file']})."
             )
-
-        # dry_run() performs the local/remote package checks and returns
-        # ``ok=True`` iff both sides are present+verified. Its internal
-        # helpers still print, so we use _run_with_display to capture.
-        result, captured = _run_with_display(
-            upgrade.dry_run, display.print_dry_run, hostname, dev
-        )
+        # dry_run() returns a structured dict; format_dry_run renders it.
+        result = upgrade.dry_run(hostname, dev)
         status = "READY" if result["ok"] else "NOT READY"
-        return f"# {hostname}\nUpgrade readiness: {status}\n{captured.strip()}"
+        return (
+            f"# {hostname}\nUpgrade readiness: {status}\n"
+            f"{display.format_dry_run(result)}"
+        )
 
     return _connect_and_run(hostname, config_path, _operation)
 
@@ -484,8 +441,12 @@ def collect_rsi(
 
     try:
         # rsi.collect_rsi() is the dict-returning core added in
-        # junos-ops 0.14.0. It writes the SCF and RSI files and returns
-        # a structured result with paths and byte counts.
+        # junos-ops 0.14.0. It writes the SCF and RSI files and
+        # returns a structured result with paths and byte counts.
+        # We keep a locally-shaped summary here (including byte counts
+        # and error messages) rather than using display.format_rsi,
+        # which is tailored for the CLI and does not include the
+        # byte counts/full error messages useful for an MCP response.
         result = rsi.collect_rsi(hostname, dev)
 
         lines = []
@@ -639,19 +600,20 @@ def push_config(
             cu.commit(confirm=confirm_timeout)
 
             # ヘルスチェック
+            # junos-ops 0.14.1+: _run_health_check returns a structured
+            # dict with a ``message`` field that carries the same
+            # multi-line text the old bool-returning version printed.
             health_cmds = health_check if health_check is not None else [
                 "ping count 3 255.255.255.255 rapid"
             ]
-            health_failed, health_output = _capture_stdout(
-                upgrade._run_health_check, hostname, dev, health_cmds
-            )
+            hc = upgrade._run_health_check(hostname, dev, health_cmds)
 
-            if health_failed:
+            if not hc["ok"]:
                 # ヘルスチェック失敗 — confirm せずタイマー満了で自動ロールバック
                 cu.unlock()
                 return (
                     f"# {hostname}\n## Config diff\n{diff}\n"
-                    f"## HEALTH CHECK FAILED\n{health_output.strip()}\n"
+                    f"## HEALTH CHECK FAILED\n{hc['message']}\n"
                     f"Config will auto-rollback in {confirm_timeout} minute(s).\n"
                     f"DO NOT run commit confirm manually."
                 )
@@ -695,13 +657,14 @@ def copy_package(hostname: str, dry_run: bool = True, force: bool = False, confi
         common.args.dry_run = dry_run
         common.args.force = force
         common.args.subcommand = "copy"
-        result, captured = _run_with_display(
-            upgrade.copy, display.print_copy, hostname, dev
-        )
+        result = upgrade.copy(hostname, dev)
         status = "OK" if result.get("ok") else "FAILED"
         if result.get("skipped"):
             status = f"SKIPPED ({result.get('skip_reason')})"
-        return f"# {hostname}\n## copy_package: {status}\n{captured.strip()}"
+        return (
+            f"# {hostname}\n## copy_package: {status}\n"
+            f"{display.format_copy(result)}"
+        )
 
     return _connect_and_run(hostname, config_path, _operation)
 
@@ -728,13 +691,14 @@ def install_package(hostname: str, dry_run: bool = True, force: bool = False, co
         # fail-fast when the remote package is missing (install-only).
         # MCP always drives the full copy+install pipeline, so "upgrade".
         common.args.subcommand = "upgrade"
-        result, captured = _run_with_display(
-            upgrade.install, display.print_install, hostname, dev
-        )
+        result = upgrade.install(hostname, dev)
         status = "OK" if result.get("ok") else "FAILED"
         if result.get("skipped"):
             status = f"SKIPPED ({result.get('skip_reason')})"
-        return f"# {hostname}\n## install_package: {status}\n{captured.strip()}"
+        return (
+            f"# {hostname}\n## install_package: {status}\n"
+            f"{display.format_install(result)}"
+        )
 
     return _connect_and_run(hostname, config_path, _operation)
 
@@ -758,14 +722,13 @@ def rollback_package(hostname: str, dry_run: bool = True, config_path: str = "")
         if pending is None:
             return f"# {hostname}\nNo pending version, rollback skipped"
 
-        result, captured = _run_with_display(
-            upgrade.rollback, display.print_rollback, hostname, dev
-        )
+        result = upgrade.rollback(hostname, dev)
         status = "OK" if result.get("ok") else "FAILED"
         return (
             f"# {hostname}\n"
             f"Pending version: {pending}\n"
-            f"## rollback_package: {status}\n{captured.strip()}"
+            f"## rollback_package: {status}\n"
+            f"{display.format_rollback(result)}"
         )
 
     return _connect_and_run(hostname, config_path, _operation)
@@ -801,13 +764,14 @@ def schedule_reboot(
         common.args.dry_run = dry_run
         common.args.force = force
         common.args.subcommand = "reboot"
-        result, captured = _run_with_display(
-            upgrade.reboot, display.print_reboot, hostname, dev, reboot_dt
-        )
+        result = upgrade.reboot(hostname, dev, reboot_dt)
         # reboot() preserves legacy exit codes in result["code"]
         # (0 success; 2..6 various failure modes).
         status = "OK" if result.get("ok") else f"FAILED (code={result.get('code')})"
-        return f"# {hostname}\n## schedule_reboot: {status}\n{captured.strip()}"
+        return (
+            f"# {hostname}\n## schedule_reboot: {status}\n"
+            f"{display.format_reboot(result)}"
+        )
 
     return _connect_and_run(hostname, config_path, _operation)
 
