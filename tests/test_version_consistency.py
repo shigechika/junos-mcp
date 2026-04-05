@@ -1,8 +1,7 @@
-"""Guard: all version strings in the repo must agree with ``junos_mcp.__version__``.
+"""Guard: version strings in the repo must agree with ``junos_mcp.__version__``.
 
 ``junos_mcp/__init__.py`` is the single source of truth for the
-package version. Two other locations carry a copy that must be kept
-in sync:
+package version.
 
 1. ``pyproject.toml`` — already reads ``junos_mcp.__version__``
    dynamically via ``dynamic = ["version"]`` + ``[tool.setuptools.dynamic]
@@ -10,47 +9,46 @@ in sync:
    is needed there.
 
 2. ``server.json`` — the MCP Registry metadata file. It carries the
-   version twice (top-level ``version`` and ``packages[0].version``).
-   The release workflow (``.github/workflows/release.yml``) patches both
-   fields from the git tag at publish time, but the committed copy
-   still has to agree with ``__init__.py`` so that:
-
-   - local ``mcp-publisher validate`` works against an accurate file,
-   - readers of the repo see the same version everywhere,
-   - a forgotten bump is caught by CI instead of silently diverging.
-
-If this test fails after bumping ``__init__.py``, update ``server.json``
-to match (both the top-level ``version`` and ``packages[0].version``).
+   version twice (top-level ``version`` and ``packages[0].version``),
+   but those fields are **placeholders** intentionally pinned to the
+   sentinel ``"0.0.0"``. The release workflow
+   (``.github/workflows/release.yml``) patches both fields from the git
+   tag at publish time, so the committed file never needs to be bumped
+   by hand. This test only enforces that the sentinel is present and
+   the two fields stay in lockstep.
 """
 
 import json
 from pathlib import Path
 
-import junos_mcp
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SENTINEL_VERSION = "0.0.0"
 
 
-def test_server_json_version_matches_package():
-    """server.json's version fields must match junos_mcp.__version__."""
+def test_server_json_version_is_sentinel_placeholder():
+    """server.json version fields must be the sentinel '0.0.0'.
+
+    The committed server.json never carries a real version — the release
+    workflow patches both ``version`` and ``packages[0].version`` from the
+    git tag at publish time. Pinning the committed copy to the sentinel
+    keeps ``__init__.py`` as the single source of truth and removes the
+    hand-sync step from the release checklist.
+    """
     with (REPO_ROOT / "server.json").open() as f:
         data = json.load(f)
 
-    expected = junos_mcp.__version__
-
-    assert data["version"] == expected, (
-        f"server.json top-level version ({data['version']!r}) "
-        f"does not match junos_mcp.__version__ ({expected!r}). "
-        f"Bump server.json when you bump junos_mcp/__init__.py."
+    assert data["version"] == SENTINEL_VERSION, (
+        f"server.json top-level version must be the sentinel "
+        f"{SENTINEL_VERSION!r} (got {data['version']!r}). The release "
+        f"workflow rewrites it from the git tag at publish time."
     )
 
     packages = data.get("packages", [])
     assert packages, "server.json is missing the 'packages' array"
     pkg_version = packages[0].get("version")
-    assert pkg_version == expected, (
-        f"server.json packages[0].version ({pkg_version!r}) "
-        f"does not match junos_mcp.__version__ ({expected!r}). "
-        f"Both version fields in server.json must be kept in sync."
+    assert pkg_version == SENTINEL_VERSION, (
+        f"server.json packages[0].version must be the sentinel "
+        f"{SENTINEL_VERSION!r} (got {pkg_version!r})."
     )
 
 

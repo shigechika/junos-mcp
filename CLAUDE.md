@@ -27,7 +27,8 @@ junos_mcp/
 └── server.py           # FastMCP サーバー定義、19ツール実装
 tests/
 ├── __init__.py
-└── test_server.py      # 71 ユニットテスト
+├── test_server.py              # 67 ユニットテスト
+└── test_version_consistency.py # バージョン整合性テスト
 pyproject.toml          # パッケージメタデータ、依存関係
 LICENSE                 # Apache License 2.0
 README.md               # 英語版
@@ -41,7 +42,6 @@ README.ja.md            # 日本語版
 #### ヘルパー関数
 - `_resolve_config_path()` — config パス解決（引数 > `JUNOS_OPS_CONFIG` 環境変数 > デフォルト探索）
 - `_init_globals()` — junos-ops グローバル状態の初期化（`common.args` / `common.config`）
-- `_capture_stdout()` — `contextlib.redirect_stdout` で print() 出力をキャプチャ
 - `_ensure_config()` — 初期化済みチェック付きの初期化ラッパー
 - `_connect_and_run()` — 接続→操作→close を一元化
 
@@ -84,8 +84,8 @@ README.ja.md            # 日本語版
 
 ## 設計上の注意事項
 
-### stdout キャプチャ
-junos-ops の関数は `print()` で結果を stdout に出力する。MCP の STDIO トランスポートは stdout を JSON-RPC 通信に使うため、`contextlib.redirect_stdout` で `io.StringIO` にキャプチャし、キャプチャした文字列をツールの戻り値として返す。
+### junos-ops の戻り値
+junos-ops 0.14 以降の `format_*` API は整形済み文字列を直接返すため、MCP ツールはそれをそのまま戻り値として返せる。MCP の STDIO トランスポートは stdout を JSON-RPC 通信に使うので、**ツール実装中に `print()` を呼ばない**こと（過去は `contextlib.redirect_stdout` で回避していたが、現在は不要）。
 
 ### グローバル状態の初期化
 junos-ops は `common.args`（argparse.Namespace）と `common.config`（ConfigParser）をグローバル変数として使う。サーバーは junos-ops の `conftest.py` と同パターンで初期化する。破壊的操作のツールは呼び出し前に `common.args.dry_run` 等のフラグを適切にセットする。
@@ -111,20 +111,19 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-73 テスト（グローバル初期化、config パス解決、stdout キャプチャ、接続管理、19 ツールの動作検証、バージョン整合性）。
+69 テスト（グローバル初期化、config パス解決、接続管理、19 ツールの動作検証、バージョン整合性）。
 
 ## バージョン管理
 
 **単一の source of truth:** `junos_mcp/__init__.py` の `__version__` のみ。
 
 - `pyproject.toml` は `dynamic = ["version"]` + `[tool.setuptools.dynamic] version = {attr = "junos_mcp.__version__"}` で自動参照 — 手動更新不要。
-- `server.json`（MCP Registry メタデータ）は `version` と `packages[0].version` の 2 箇所にコピーを持つ。リリース時 CI が git tag から `jq` で上書きするが、**コミット済みの値も `__init__.py` と同じに揃えておく必要がある**（ローカル `mcp-publisher validate`、リポジトリ閲覧者の混乱防止、CI での早期検出のため）。
-- `tests/test_version_consistency.py` が `__init__.py` と `server.json` の整合性を assert し、ズレたら CI red。
+- `server.json`（MCP Registry メタデータ）の `version` と `packages[0].version` は **sentinel `"0.0.0"` に固定したプレースホルダ**。リリース時 CI（`.github/workflows/release.yml` の `mcp-registry` ジョブ）が git tag から `jq` で両フィールドを上書きするため、**コミット済みの値を手で更新する必要はない**。
+- `tests/test_version_consistency.py` が `server.json` の 2 箇所の version が sentinel のままであることを assert し、誤って手動で書き換えた場合は CI red。
 - リリース時の bump 手順:
   1. `junos_mcp/__init__.py` の `__version__` を更新
-  2. `server.json` の 2 箇所の `version` を同じ値に更新
-  3. `pytest tests/test_version_consistency.py` で整合性確認
-  4. コミット & タグ push → release workflow 起動
+  2. `pytest tests/test_version_consistency.py` で sentinel が保たれているか確認
+  3. コミット & タグ push → release workflow 起動（CI が server.json をタグから埋める）
 
 ## Claude Code への登録（ローカル開発）
 
