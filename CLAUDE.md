@@ -111,7 +111,20 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-71テスト（グローバル初期化、config パス解決、stdout キャプチャ、接続管理、19ツールの動作検証）。
+73 テスト（グローバル初期化、config パス解決、stdout キャプチャ、接続管理、19 ツールの動作検証、バージョン整合性）。
+
+## バージョン管理
+
+**単一の source of truth:** `junos_mcp/__init__.py` の `__version__` のみ。
+
+- `pyproject.toml` は `dynamic = ["version"]` + `[tool.setuptools.dynamic] version = {attr = "junos_mcp.__version__"}` で自動参照 — 手動更新不要。
+- `server.json`（MCP Registry メタデータ）は `version` と `packages[0].version` の 2 箇所にコピーを持つ。リリース時 CI が git tag から `jq` で上書きするが、**コミット済みの値も `__init__.py` と同じに揃えておく必要がある**（ローカル `mcp-publisher validate`、リポジトリ閲覧者の混乱防止、CI での早期検出のため）。
+- `tests/test_version_consistency.py` が `__init__.py` と `server.json` の整合性を assert し、ズレたら CI red。
+- リリース時の bump 手順:
+  1. `junos_mcp/__init__.py` の `__version__` を更新
+  2. `server.json` の 2 箇所の `version` を同じ値に更新
+  3. `pytest tests/test_version_consistency.py` で整合性確認
+  4. コミット & タグ push → release workflow 起動
 
 ## Claude Code への登録（ローカル開発）
 
