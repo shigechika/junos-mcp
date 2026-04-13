@@ -234,8 +234,8 @@ def _resolve_hostnames(
 
 @mcp.tool()
 def run_show_command_batch(
+    command: str,
     hostnames: list[str] | None = None,
-    command: str = "",
     tags: list[str] | None = None,
     max_workers: int = 5,
     config_path: str = "",
@@ -254,8 +254,6 @@ def run_show_command_batch(
         max_workers: Maximum parallel threads (default 5)
         config_path: Path to config.ini (empty string uses default search)
     """
-    if not command:
-        return "Error: command is required"
     err = _ensure_config(config_path)
     if err:
         return err

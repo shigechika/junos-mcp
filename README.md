@@ -101,9 +101,10 @@ python -m junos_mcp --help
 |--------|-------------|
 | `-V`, `--version` | Print version and exit |
 | `--check` | Load config.ini, list routers, and exit (exit code 1 on error) |
+| `--check-host HOSTNAME` | With `--check`, also open a NETCONF session to verify reachability/auth |
 | `--transport {stdio,streamable-http}` | Transport protocol (default: `stdio`) |
 
-`--check` is handy to verify `JUNOS_OPS_CONFIG` and `config.ini` are reachable before registering the server with an AI assistant.
+`--check` is handy to verify `JUNOS_OPS_CONFIG` and `config.ini` are reachable before registering the server with an AI assistant. Combine with `--check-host rt1` to also confirm that credentials actually authenticate against a real device.
 
 ## Tag-based host filtering
 

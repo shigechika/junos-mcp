@@ -10,8 +10,12 @@ from junos_mcp import __version__
 from junos_mcp.server import _ensure_config, mcp
 
 
-def _check_config() -> int:
-    """Verify config.ini is loadable and list available routers."""
+def _check_config(check_host: str | None = None) -> int:
+    """Verify config.ini is loadable and list available routers.
+
+    If ``check_host`` is given, additionally open a NETCONF session to that
+    host to verify reachability and authentication.
+    """
     err = _ensure_config("")
     if err:
         print(f"Configuration error: {err}", file=sys.stderr)
@@ -21,6 +25,37 @@ def _check_config() -> int:
     sections = common.config.sections()
     print(f"OK: config loaded from {common.args.config}")
     print(f"Routers ({len(sections)}): {', '.join(sections) if sections else '(none)'}")
+
+    if check_host is None:
+        return 0
+
+    if not common.config.has_section(check_host):
+        print(
+            f"Error: host '{check_host}' not found in config",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        not common.config.has_option(check_host, "host")
+        or common.config.get(check_host, "host") is None
+    ):
+        common.config.set(check_host, "host", check_host)
+
+    conn = common.connect(check_host)
+    if not conn["ok"]:
+        msg = conn.get("error_message") or conn.get("error") or "Connection failed"
+        print(f"Connection error ({check_host}): {msg}", file=sys.stderr)
+        return 2
+    try:
+        dev = conn["dev"]
+        model = dev.facts.get("model", "?")
+        version = dev.facts.get("version", "?")
+        print(f"OK: connected to {check_host} (model={model}, version={version})")
+    finally:
+        try:
+            conn["dev"].close()
+        except Exception:
+            pass
     return 0
 
 
@@ -51,6 +86,14 @@ def main() -> None:
         help="Verify config.ini is loadable and list routers, then exit.",
     )
     parser.add_argument(
+        "--check-host",
+        metavar="HOSTNAME",
+        help=(
+            "With --check, also open a NETCONF session to HOSTNAME to verify "
+            "reachability and authentication."
+        ),
+    )
+    parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
         default="stdio",
@@ -58,8 +101,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.check:
-        sys.exit(_check_config())
+    if args.check or args.check_host:
+        sys.exit(_check_config(args.check_host))
 
     try:
         mcp.run(transport=args.transport)

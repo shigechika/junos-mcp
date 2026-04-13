@@ -558,8 +558,8 @@ class TestRunShowCommandBatch:
         mock_dev.cli.return_value = "BGP running"
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command_batch(
-            ["rt1.example.jp", "rt2.example.jp"],
             "show bgp summary",
+            hostnames=["rt1.example.jp", "rt2.example.jp"],
             max_workers=2,
         )
         assert "rt1.example.jp" in result
@@ -573,7 +573,7 @@ class TestRunShowCommandBatch:
         mock_dev.cli.return_value = "ok"
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command_batch(
-            ["rt1.example.jp"], "show version", max_workers=1
+            "show version", hostnames=["rt1.example.jp"], max_workers=1
         )
         assert "rt1.example.jp" in result
         assert "ok" in result
