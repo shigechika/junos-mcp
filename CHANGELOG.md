@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-13
+
 ### Added
 - `--check-host HOSTNAME` option to `python -m junos_mcp` — with `--check`,
   opens a NETCONF session to the given host to verify reachability and
   authentication in addition to config.ini loading.
+- `CHANGELOG.md` (Keep a Changelog format).
 
 ### Changed
 - `run_show_command_batch` signature reordered to `(command, hostnames=None,
@@ -47,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened release workflow; pinned `server.json` version to a sentinel
   placeholder that CI overwrites from the git tag at release time.
 
-[Unreleased]: https://github.com/shigechika/junos-mcp/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/shigechika/junos-mcp/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/shigechika/junos-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/shigechika/junos-mcp/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/shigechika/junos-mcp/releases/tag/v0.5.2
