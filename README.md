@@ -19,7 +19,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 |------|-------------|:----------:|
 | `get_device_facts` | Get basic device information (model, hostname, serial, version) | Yes |
 | `get_version` | Get JUNOS version with upgrade status | Yes |
-| `get_router_list` | List all available routers from config.ini | No |
+| `get_router_list` | List routers from config.ini (optionally filtered by tags) | No |
 
 ### CLI Command Execution
 
@@ -27,7 +27,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 |------|-------------|:----------:|
 | `run_show_command` | Run a single CLI show command | Yes |
 | `run_show_commands` | Run multiple CLI commands in a single session | Yes |
-| `run_show_command_batch` | Run a command on multiple devices in parallel | Yes |
+| `run_show_command_batch` | Run a command on multiple devices in parallel (supports tag filter) | Yes |
 
 ### Configuration Management
 
@@ -55,7 +55,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | Tool | Description | Connection |
 |------|-------------|:----------:|
 | `collect_rsi` | Collect RSI/SCF with model-specific timeouts | Yes |
-| `collect_rsi_batch` | Collect RSI/SCF from multiple devices in parallel | Yes |
+| `collect_rsi_batch` | Collect RSI/SCF from multiple devices in parallel (supports tag filter) | Yes |
 
 ### Safety by Design
 
@@ -90,6 +90,34 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[test]"
 ```
+
+## CLI options
+
+```bash
+python -m junos_mcp --help
+```
+
+| Option | Description |
+|--------|-------------|
+| `-V`, `--version` | Print version and exit |
+| `--check` | Load config.ini, list routers, and exit (exit code 1 on error) |
+| `--transport {stdio,streamable-http}` | Transport protocol (default: `stdio`) |
+
+`--check` is handy to verify `JUNOS_OPS_CONFIG` and `config.ini` are reachable before registering the server with an AI assistant.
+
+## Tag-based host filtering
+
+`run_show_command_batch`, `collect_rsi_batch`, and `get_router_list` accept an optional `tags` argument. Hosts whose `tags = ...` line in `config.ini` is a superset of the requested tags (AND-match) are selected. When `hostnames` is omitted on batch tools, all sections are considered.
+
+```python
+# VRRP-active side only
+run_show_command_batch(command="show route summary", tags=["main"])
+
+# Collect RSI from a specific site
+collect_rsi_batch(tags=["tokyo", "edge"])
+```
+
+See the [junos-ops tag documentation](https://github.com/shigechika/junos-ops#tag-based-host-filtering) for how to tag sections in `config.ini`.
 
 ## Configuration
 
@@ -191,13 +219,13 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-71 tests covering all 19 tools, helper functions, and edge cases.
+69 tests covering all 19 tools, helper functions, and edge cases.
 
 ## Architecture
 
-### stdout Capture
+### Stdout-safe by construction
 
-junos-ops functions use `print()` for output. Since MCP STDIO transport uses stdout for JSON-RPC communication, all `print()` output is captured via `contextlib.redirect_stdout` and returned as tool results.
+Since junos-ops 0.14.1, core functions return structured `dict` values and never print to stdout; MCP tools render output via `junos_ops.display.format_*()`. No `contextlib.redirect_stdout` is needed, so the MCP STDIO JSON-RPC channel stays clean.
 
 ### Global State Initialization
 

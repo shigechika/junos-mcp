@@ -202,32 +202,73 @@ def run_show_commands(hostname: str, commands: list[str], config_path: str = "")
     return _connect_and_run(hostname, config_path, _operation)
 
 
+def _resolve_hostnames(
+    hostnames: list[str] | None,
+    tags: list[str] | None,
+) -> list[str] | str:
+    """Resolve target hostnames from explicit list and/or tag filter.
+
+    Returns a list of hostnames, or an error string. Both inputs are
+    optional; if both are empty, all config sections are returned.
+    When tags are given with hostnames, results are the intersection.
+    """
+    all_sections = common.config.sections()
+    if tags:
+        required = {t.strip().lower() for t in tags if t.strip()}
+        matched = common._filter_by_tags(required)
+        if hostnames:
+            hset = set(hostnames)
+            resolved = [h for h in matched if h in hset]
+        else:
+            resolved = matched
+        if not resolved:
+            return f"Error: no hosts match tags {sorted(required)}"
+        return resolved
+    if hostnames:
+        missing = [h for h in hostnames if h not in all_sections]
+        if missing:
+            return f"Error: hostnames not found in config: {missing}"
+        return list(hostnames)
+    return list(all_sections)
+
+
 @mcp.tool()
 def run_show_command_batch(
-    hostnames: list[str],
-    command: str,
+    hostnames: list[str] | None = None,
+    command: str = "",
+    tags: list[str] | None = None,
     max_workers: int = 5,
     config_path: str = "",
 ) -> str:
     """Run a CLI show command on multiple devices in parallel.
 
-    Uses ThreadPoolExecutor for concurrent execution.
+    Uses ThreadPoolExecutor for concurrent execution. Either ``hostnames``
+    or ``tags`` selects the targets; if both are omitted, every router in
+    config.ini is targeted. When both are given, the intersection is used.
 
     Args:
-        hostnames: List of target device hostnames (must exist in config.ini)
         command: CLI command to execute on all devices
+        hostnames: List of target device hostnames (must exist in config.ini)
+        tags: Tag filter (AND-match) — selects only hosts whose ``tags`` in
+            config.ini is a superset of this list
         max_workers: Maximum parallel threads (default 5)
         config_path: Path to config.ini (empty string uses default search)
     """
+    if not command:
+        return "Error: command is required"
     err = _ensure_config(config_path)
     if err:
         return err
 
+    targets = _resolve_hostnames(hostnames, tags)
+    if isinstance(targets, str):
+        return targets
+
     def _run_one(hostname):
         return run_show_command(hostname, command, config_path)
 
-    results = common.run_parallel(_run_one, hostnames, max_workers=max_workers)
-    parts = [results[h] for h in hostnames if h in results]
+    results = common.run_parallel(_run_one, targets, max_workers=max_workers)
+    parts = [results[h] for h in targets if h in results]
     return "\n\n".join(parts)
 
 
@@ -302,23 +343,30 @@ def compare_version(left: str, right: str) -> str:
 
 
 @mcp.tool()
-def get_router_list(config_path: str = "") -> str:
-    """List all available routers defined in config.ini.
+def get_router_list(tags: list[str] | None = None, config_path: str = "") -> str:
+    """List routers defined in config.ini, optionally filtered by tags.
 
-    Returns section names from config.ini, which represent
-    the hostnames that can be used with other tools.
-    No device connection required.
+    Returns section names from config.ini, which represent the hostnames
+    that can be used with other tools. No device connection required.
 
     Args:
+        tags: Tag filter (AND-match) — only hosts whose ``tags`` in config.ini
+            is a superset of this list are returned. None/empty returns all.
         config_path: Path to config.ini (empty string uses default search)
     """
     err = _ensure_config(config_path)
     if err:
         return err
-    sections = common.config.sections()
+    if tags:
+        required = {t.strip().lower() for t in tags if t.strip()}
+        sections = common._filter_by_tags(required)
+        label = f"Routers matching tags {sorted(required)}"
+    else:
+        sections = common.config.sections()
+        label = "Available routers"
     if not sections:
-        return "No routers defined in config"
-    return f"Available routers ({len(sections)}):\n" + "\n".join(
+        return "No routers defined in config" if not tags else f"{label}: (none)"
+    return f"{label} ({len(sections)}):\n" + "\n".join(
         f"- {s}" for s in sections
     )
 
@@ -481,18 +529,23 @@ def collect_rsi(
 
 @mcp.tool()
 def collect_rsi_batch(
-    hostnames: list[str],
+    hostnames: list[str] | None = None,
+    tags: list[str] | None = None,
     output_dir: str = "",
     max_workers: int = 20,
     config_path: str = "",
 ) -> str:
     """Collect RSI/SCF from multiple devices in parallel.
 
-    Uses ThreadPoolExecutor for concurrent collection.
-    Default 20 workers matches junos-ops CLI default for RSI collection.
+    Uses ThreadPoolExecutor for concurrent collection. Default 20 workers
+    matches junos-ops CLI default for RSI collection. Either ``hostnames``
+    or ``tags`` selects the targets; if both are omitted, every router in
+    config.ini is targeted. When both are given, the intersection is used.
 
     Args:
         hostnames: List of target device hostnames
+        tags: Tag filter (AND-match) — selects only hosts whose ``tags`` in
+            config.ini is a superset of this list
         output_dir: Directory to save output files (empty uses config RSI_DIR or current dir)
         max_workers: Maximum parallel threads (default 20)
         config_path: Path to config.ini (empty string uses default search)
@@ -501,11 +554,15 @@ def collect_rsi_batch(
     if err:
         return err
 
+    targets = _resolve_hostnames(hostnames, tags)
+    if isinstance(targets, str):
+        return targets
+
     def _run_one(hostname):
         return collect_rsi(hostname, output_dir, config_path)
 
-    results = common.run_parallel(_run_one, hostnames, max_workers=max_workers)
-    parts = [results[h] for h in hostnames if h in results]
+    results = common.run_parallel(_run_one, targets, max_workers=max_workers)
+    parts = [results[h] for h in targets if h in results]
     return "\n\n".join(parts)
 
 

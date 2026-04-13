@@ -33,7 +33,7 @@ dependencies = [
 test = ["pytest", "pytest-cov"]
 
 [project.scripts]
-junos-mcp = "junos_mcp.server:mcp.run"
+junos-mcp = "junos_mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/shigechika/junos-mcp"
