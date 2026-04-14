@@ -655,9 +655,10 @@ def push_config(
             cu.commit(confirm=confirm_timeout)
 
             # ヘルスチェック
-            # junos-ops 0.14.1+: _run_health_check returns a structured
-            # dict with a ``message`` field that carries the same
-            # multi-line text the old bool-returning version printed.
+            # junos-ops 0.16.0+: _run_health_check returns a structured
+            # dict (ok / passed_command / commands / steps / message).
+            # The ``message`` field carries the same multi-line text
+            # the pre-0.16 bool-returning version used to print.
             health_cmds = health_check if health_check is not None else [
                 "ping count 3 255.255.255.255 rapid"
             ]
