@@ -5,13 +5,13 @@ CLI execution, config management, firmware upgrade, and RSI/SCF collection.
 
 Supports STDIO and Streamable HTTP transports.
 
-As of junos-mcp 0.5.1 this server uses junos-ops ≥ 0.14.1, which
-guarantees that every core function returns a structured ``dict`` and
-does not print to stdout. MCP tools build responses by calling the
-core function and then ``junos_ops.display.format_*(result)`` to get
-rendered text as a string — no ``contextlib.redirect_stdout`` is
-needed anywhere in this module, so the MCP STDIO JSON-RPC channel is
-safe by construction.
+As of junos-mcp 0.8.0 this server uses junos-ops ≥ 0.16.0, which
+guarantees that every core function (including ``_run_health_check``)
+returns a structured ``dict`` and does not print to stdout. MCP tools
+build responses by calling the core function and then
+``junos_ops.display.format_*(result)`` to get rendered text as a
+string — no ``contextlib.redirect_stdout`` is needed anywhere in this
+module, so the MCP STDIO JSON-RPC channel is safe by construction.
 """
 
 import argparse

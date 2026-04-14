@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-15
+
+### Fixed
+- `push_config` no longer raises `TypeError` at runtime when resolving the
+  health-check outcome. The tool subscripts `_run_health_check()`'s return
+  value as `hc["ok"]` / `hc["message"]`, which required the dict shape
+  introduced in junos-ops 0.16.0; against 0.14.1 through 0.15.0 the
+  function still returned `bool` and the tool crashed. The dependency
+  floor is bumped from `>=0.14.1` to `>=0.16.0` to match reality.
+
+### Changed
+- CI matrix now includes a `windows-latest` × Python 3.12 smoke-test job
+  (closes [#2](https://github.com/shigechika/junos-mcp/issues/2)) to guard
+  against stdio newline regressions in the upstream `mcp` package
+  (cf. [python-sdk#2433](https://github.com/modelcontextprotocol/python-sdk/issues/2433)).
+  `fail-fast: false` keeps Linux results visible when Windows trips on
+  something unrelated.
+
 ## [0.7.0] - 2026-04-13
 
 ### Added
