@@ -2,6 +2,7 @@
 
 import argparse
 import configparser
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -129,9 +130,16 @@ class TestInitGlobals:
         """~ がホームディレクトリに展開される"""
         config_file = tmp_path / "config.ini"
         config_file.write_text("[rt1.example.jp]\n")
+        # os.path.expanduser consults HOME on POSIX and USERPROFILE on
+        # Windows (HOME is only consulted as a Windows fallback), so
+        # patch both to keep the test cross-platform.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         _init_globals("~/config.ini")
-        assert common.args.config == str(config_file)
+        # Normalize separators: the literal "/" in "~/config.ini" is
+        # preserved verbatim by expanduser on Windows, producing a
+        # mixed-separator path that normpath canonicalizes.
+        assert os.path.normpath(common.args.config) == str(config_file)
 
     def test_init_uses_env_var(self, tmp_path, monkeypatch):
         """JUNOS_OPS_CONFIG 環境変数からパスを取得"""
@@ -160,10 +168,15 @@ class TestResolveConfigPath:
 
     def test_env_var_tilde_expanded(self, tmp_path, monkeypatch):
         """環境変数の ~ も展開される"""
+        # Patch both HOME (POSIX) and USERPROFILE (Windows) — see the
+        # comment in test_init_expands_tilde for why this is needed.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.setenv("JUNOS_OPS_CONFIG", "~/.config/junos-ops/config.ini")
         result = _resolve_config_path("")
-        assert result == str(tmp_path / ".config/junos-ops/config.ini")
+        assert os.path.normpath(result) == str(
+            tmp_path / ".config" / "junos-ops" / "config.ini"
+        )
 
     def test_default_when_no_argument_no_env(self, monkeypatch):
         """引数も環境変数もない場合はデフォルト探索"""
