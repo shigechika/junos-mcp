@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-16
+
+### Fixed
+- `get_router_list` and `run_show_command_batch` no longer fail with
+  `AttributeError: module 'junos_ops.common' has no attribute '_filter_by_tags'`
+  against junos-ops ≥ 0.16.6. Upstream renamed `_filter_by_tags(set)` to
+  `_filter_by_tag_groups(list[set])` when making `--tags` repeatable with
+  OR-between-groups semantics. Call sites switched to
+  `common._parse_tag_groups(tags)` + `common._filter_by_tag_groups(groups)`.
+  Dependency floor bumped from `>=0.16.0` to `>=0.16.7`.
+
+### Changed
+- MCP `tags` parameters now accept the same AND/OR grammar as the
+  `junos-ops --tags` CLI flag: each list element is one tag group
+  (comma-separated tags AND together within a group); multiple list
+  elements OR together across groups. E.g.
+  `["tokyo,core", "backup"]` means `(tokyo AND core) OR backup`.
+  A plain `["backup"]` still behaves as before.
+
 ## [0.8.0] - 2026-04-15
 
 ### Fixed

@@ -5,7 +5,7 @@ CLI execution, config management, firmware upgrade, and RSI/SCF collection.
 
 Supports STDIO and Streamable HTTP transports.
 
-As of junos-mcp 0.8.0 this server uses junos-ops ≥ 0.16.0, which
+As of junos-mcp 0.9.0 this server uses junos-ops ≥ 0.16.7, which
 guarantees that every core function (including ``_run_health_check``)
 returns a structured ``dict`` and does not print to stdout. MCP tools
 build responses by calling the core function and then
@@ -214,15 +214,15 @@ def _resolve_hostnames(
     """
     all_sections = common.config.sections()
     if tags:
-        required = {t.strip().lower() for t in tags if t.strip()}
-        matched = common._filter_by_tags(required)
+        tag_groups = common._parse_tag_groups(tags)
+        matched = common._filter_by_tag_groups(tag_groups)
         if hostnames:
             hset = set(hostnames)
             resolved = [h for h in matched if h in hset]
         else:
             resolved = matched
         if not resolved:
-            return f"Error: no hosts match tags {sorted(required)}"
+            return f"Error: no hosts match tags {tags}"
         return resolved
     if hostnames:
         missing = [h for h in hostnames if h not in all_sections]
@@ -249,8 +249,11 @@ def run_show_command_batch(
     Args:
         command: CLI command to execute on all devices
         hostnames: List of target device hostnames (must exist in config.ini)
-        tags: Tag filter (AND-match) — selects only hosts whose ``tags`` in
-            config.ini is a superset of this list
+        tags: Tag filter. Each list element is one tag group (comma-separated
+            tags AND together within a group). Multiple list elements OR
+            together across groups. E.g. ``["tokyo,core", "backup"]`` means
+            ``(tokyo AND core) OR backup``. Combined with ``hostnames`` the
+            result is the intersection.
         max_workers: Maximum parallel threads (default 5)
         config_path: Path to config.ini (empty string uses default search)
     """
@@ -348,17 +351,19 @@ def get_router_list(tags: list[str] | None = None, config_path: str = "") -> str
     that can be used with other tools. No device connection required.
 
     Args:
-        tags: Tag filter (AND-match) — only hosts whose ``tags`` in config.ini
-            is a superset of this list are returned. None/empty returns all.
+        tags: Tag filter. Each list element is one tag group (comma-separated
+            tags AND together within a group); multiple list elements OR
+            together across groups. E.g. ``["tokyo,core", "backup"]`` means
+            ``(tokyo AND core) OR backup``. None/empty returns all.
         config_path: Path to config.ini (empty string uses default search)
     """
     err = _ensure_config(config_path)
     if err:
         return err
     if tags:
-        required = {t.strip().lower() for t in tags if t.strip()}
-        sections = common._filter_by_tags(required)
-        label = f"Routers matching tags {sorted(required)}"
+        tag_groups = common._parse_tag_groups(tags)
+        sections = common._filter_by_tag_groups(tag_groups)
+        label = f"Routers matching tags {tags}"
     else:
         sections = common.config.sections()
         label = "Available routers"
@@ -542,8 +547,10 @@ def collect_rsi_batch(
 
     Args:
         hostnames: List of target device hostnames
-        tags: Tag filter (AND-match) — selects only hosts whose ``tags`` in
-            config.ini is a superset of this list
+        tags: Tag filter. Each list element is one tag group (comma-separated
+            tags AND together within a group); multiple list elements OR
+            together across groups. Combined with ``hostnames`` the result is
+            the intersection.
         output_dir: Directory to save output files (empty uses config RSI_DIR or current dir)
         max_workers: Maximum parallel threads (default 20)
         config_path: Path to config.ini (empty string uses default search)
