@@ -102,17 +102,34 @@ python -m junos_mcp --help
 
 ## タグによるホスト絞り込み
 
-`run_show_command_batch`、`collect_rsi_batch`、`get_router_list` は `tags` 引数を受け付けます。`config.ini` の `tags = ...` 行が指定タグの上位集合（AND マッチ）となるホストのみが選ばれます。バッチ系ツールで `hostnames` を省略した場合は全セクションが対象になります。
+`run_show_command_batch`、`collect_rsi_batch`、`get_router_list` は `tags` 引数を受け付けます。文法は `junos-ops --tags` CLI フラグと同一です（junos-mcp 0.9.0 / junos-ops 0.16.6 以降）。
+
+- リストの各要素が **1 つのタググループ**。グループ内のカンマ区切りタグは **AND** で結合。
+- リスト要素同士は **OR** で結合。
+- バッチ系ツールで `hostnames` と併用した場合は **積集合**（タグで絞った中からさらに名前で絞り込み）。積集合が空ならエラーを返します。
 
 ```python
-# VRRP active 側のみ
+# 1 グループ・1 タグ — "main" タグを持つホスト
 run_show_command_batch(command="show route summary", tags=["main"])
 
-# 特定拠点から RSI 収集
-collect_rsi_batch(tags=["tokyo", "edge"])
+# 1 グループ・2 タグ — グループ内 AND: tokyo AND edge
+collect_rsi_batch(tags=["tokyo,edge"])
+
+# 2 グループ — グループ間 OR: main OR backup
+get_router_list(tags=["main", "backup"])
+
+# 混在: (tokyo AND core) OR backup
+run_show_command_batch(command="show version", tags=["tokyo,core", "backup"])
+
+# 積集合: backup タグを持つホストのうち rt1 / rt2 のみ
+run_show_command_batch(
+    command="show version",
+    hostnames=["rt1.example.jp", "rt2.example.jp"],
+    tags=["backup"],
+)
 ```
 
-`config.ini` へのタグ付け方法は [junos-ops のタグドキュメント](https://github.com/shigechika/junos-ops#tag-based-host-filtering) を参照してください。
+`config.ini` へのタグ付け方法と CLI 側の同文法については [junos-ops のタグドキュメント](https://github.com/shigechika/junos-ops#tag-based-host-filtering) を参照してください。
 
 ## 設定
 

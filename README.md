@@ -108,17 +108,34 @@ python -m junos_mcp --help
 
 ## Tag-based host filtering
 
-`run_show_command_batch`, `collect_rsi_batch`, and `get_router_list` accept an optional `tags` argument. Hosts whose `tags = ...` line in `config.ini` is a superset of the requested tags (AND-match) are selected. When `hostnames` is omitted on batch tools, all sections are considered.
+`run_show_command_batch`, `collect_rsi_batch`, and `get_router_list` accept an optional `tags` argument. The grammar matches the `junos-ops --tags` CLI flag (since junos-mcp 0.9.0 / junos-ops 0.16.6):
+
+- Each list element is **one tag group**. Comma-separated tags inside a group **AND** together.
+- Multiple list elements **OR** together across groups.
+- When combined with `hostnames` on batch tools, the result is the **intersection** (tags filter further narrowed by names). An empty intersection returns an error.
 
 ```python
-# VRRP-active side only
+# 1 group, 1 tag — hosts tagged "main"
 run_show_command_batch(command="show route summary", tags=["main"])
 
-# Collect RSI from a specific site
-collect_rsi_batch(tags=["tokyo", "edge"])
+# 1 group, 2 tags — AND within the group: tokyo AND edge
+collect_rsi_batch(tags=["tokyo,edge"])
+
+# 2 groups — OR across groups: main OR backup
+get_router_list(tags=["main", "backup"])
+
+# Mixed: (tokyo AND core) OR backup
+run_show_command_batch(command="show version", tags=["tokyo,core", "backup"])
+
+# Intersection: among backup-tagged hosts, only rt1/rt2
+run_show_command_batch(
+    command="show version",
+    hostnames=["rt1.example.jp", "rt2.example.jp"],
+    tags=["backup"],
+)
 ```
 
-See the [junos-ops tag documentation](https://github.com/shigechika/junos-ops#tag-based-host-filtering) for how to tag sections in `config.ini`.
+See the [junos-ops tag documentation](https://github.com/shigechika/junos-ops#tag-based-host-filtering) for how to tag sections in `config.ini` and for the matching CLI grammar.
 
 ## Configuration
 
