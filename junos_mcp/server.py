@@ -6,7 +6,7 @@ and pre-flight checks.
 
 Supports STDIO and Streamable HTTP transports.
 
-As of junos-mcp 0.9.0 this server uses junos-ops ≥ 0.16.7, which
+As of junos-mcp 0.11.0 this server uses junos-ops ≥ 0.16.9, which
 guarantees that every core function (including ``_run_health_check``)
 returns a structured ``dict`` and does not print to stdout. MCP tools
 build responses by calling the core function and then
@@ -829,7 +829,9 @@ def push_config(
         health_check: Fallback health check commands tried in order after commit.
             Passes if ANY command succeeds. Supports "ping ..." (checks packets received),
             "uptime" (NETCONF RPC probe), or any CLI command (success if no exception).
-            Default: ["ping count 3 255.255.255.255 rapid"]
+            Default: ["uptime"] — uses the existing NETCONF session and does not
+            depend on ICMP reachability. (Changed from broadcast ping in junos-mcp
+            0.11.0 to match junos-ops 0.16.8+.)
         config_path: Path to config.ini (empty string uses default search)
     """
     # 入力バリデーション
@@ -890,9 +892,11 @@ def push_config(
             # dict (ok / passed_command / commands / steps / message).
             # The ``message`` field carries the same multi-line text
             # the pre-0.16 bool-returning version used to print.
-            health_cmds = health_check if health_check is not None else [
-                "ping count 3 255.255.255.255 rapid"
-            ]
+            # Default is "uptime" (NETCONF RPC) to match junos-ops 0.16.8+.
+            # Broadcast ping used to be the default but fails on devices
+            # that block ICMP to 255.255.255.255 (e.g. SRX345), causing
+            # spurious auto-rollbacks.
+            health_cmds = health_check if health_check is not None else ["uptime"]
             hc = upgrade._run_health_check(hostname, dev, health_cmds)
 
             if not hc["ok"]:

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-16
+
+### Changed
+- `push_config` default health check is now `["uptime"]` (NETCONF
+  `get-system-uptime-information` RPC) instead of
+  `["ping count 3 255.255.255.255 rapid"]`. Matches the default fix
+  landed in [junos-ops 0.16.8](https://github.com/shigechika/junos-ops/blob/main/CHANGELOG.md#0168---2026-04-16).
+  `uptime` reuses the existing NETCONF session, so it reflects whether
+  commit confirmed left the management plane reachable without
+  depending on ICMP. The broadcast-ping default was triggering
+  spurious auto-rollbacks on devices that block ICMP to
+  `255.255.255.255` (SRX345 fleets among them). Explicit
+  `health_check=[...]` callers are unaffected.
+- Dependency floor raised from `>=0.16.7` to `>=0.16.9` to pull in
+  this fix plus the `check_remote_package_by_model` stale-cache fix
+  that transparently improves `check_remote_packages`.
+
 ## [0.10.0] - 2026-04-16
 
 ### Added
