@@ -57,6 +57,17 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | `collect_rsi` | Collect RSI/SCF with model-specific timeouts | Yes |
 | `collect_rsi_batch` | Collect RSI/SCF from multiple devices in parallel (supports tag filter) | Yes |
 
+### Pre-flight Checks
+
+Equivalent to the `junos-ops check` subcommand modes. All three reuse the
+junos-ops display layer for table rendering.
+
+| Tool | Description | Connection |
+|------|-------------|:----------:|
+| `check_reachability` | Probe NETCONF reachability per host (fast: no facts, 5s TCP probe) | Yes |
+| `check_local_inventory` | Verify local firmware checksums against config.ini inventory | No |
+| `check_remote_packages` | Verify staged firmware checksum on devices (post-SCP verification) | Yes |
+
 ### Safety by Design
 
 All destructive operations (`push_config`, `copy_package`, `install_package`,

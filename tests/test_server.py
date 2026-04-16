@@ -13,6 +13,9 @@ from junos_mcp.server import (
     _ensure_config,
     _init_globals,
     _resolve_config_path,
+    check_local_inventory,
+    check_reachability,
+    check_remote_packages,
     check_upgrade_readiness,
     collect_rsi,
     collect_rsi_batch,
@@ -747,6 +750,114 @@ class TestCollectRsiBatch:
         )
         assert "rt1.example.jp" in result
         assert "rt2.example.jp" in result
+
+
+# --- check_reachability / check_local_inventory / check_remote_packages ---
+
+
+class TestCheckReachability:
+    @patch("junos_ops.common.connect")
+    def test_ok_host(self, mock_connect, mock_config):
+        """到達可能ホストは ok と返る"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {
+            "hostname": "rt1.example.jp", "host": "rt1.example.jp",
+            "ok": True, "dev": mock_dev, "error": None, "error_message": None,
+        }
+        result = check_reachability(["rt1.example.jp"], max_workers=1)
+        assert "rt1.example.jp" in result
+        assert "ok" in result
+        # gather_facts=False, auto_probe=5 で呼ばれること
+        _, kwargs = mock_connect.call_args
+        assert kwargs.get("gather_facts") is False
+        assert kwargs.get("auto_probe") == 5
+
+    @patch("junos_ops.common.connect")
+    def test_unreachable_host(self, mock_connect, mock_config):
+        """到達不能ホストは fail で詳細メッセージ付き"""
+        mock_connect.return_value = {
+            "hostname": "rt1.example.jp", "host": "rt1.example.jp",
+            "ok": False, "dev": None, "error": "ConnectError",
+            "error_message": "TCP probe timeout",
+        }
+        result = check_reachability(["rt1.example.jp"], max_workers=1)
+        assert "rt1.example.jp" in result
+        assert "fail" in result
+        assert "TCP probe timeout" in result
+
+
+class TestCheckLocalInventory:
+    @patch("junos_mcp.server.upgrade.check_local_package_by_model")
+    @patch("junos_mcp.server.upgrade.iter_configured_models")
+    def test_lists_all_models(self, mock_iter, mock_check, mock_config):
+        """全モデルを iterate して結果テーブルを返す"""
+        mock_iter.return_value = ["mx204", "qfx5110"]
+        mock_check.side_effect = lambda h, m: {
+            "file": f"{m}.tgz", "local_file": f"/tmp/{m}.tgz",
+            "status": "ok", "cached": False,
+            "actual_hash": "abc", "expected_hash": "abc",
+            "message": "checksum ok", "error": None,
+        }
+        result = check_local_inventory()
+        assert "mx204" in result
+        assert "qfx5110" in result
+
+    @patch("junos_mcp.server.upgrade.check_local_package_by_model")
+    @patch("junos_mcp.server.upgrade.iter_configured_models")
+    def test_single_model_filter(self, mock_iter, mock_check, mock_config):
+        """model 指定で iter は呼ばれない"""
+        mock_check.return_value = {
+            "file": "mx204.tgz", "local_file": "/tmp/mx204.tgz",
+            "status": "ok", "cached": False,
+            "actual_hash": "abc", "expected_hash": "abc",
+            "message": "checksum ok", "error": None,
+        }
+        result = check_local_inventory(model="mx204")
+        assert "mx204" in result
+        mock_iter.assert_not_called()
+
+    @patch("junos_mcp.server.upgrade.iter_configured_models")
+    def test_empty_inventory(self, mock_iter, mock_config):
+        """モデル定義が空ならその旨のメッセージ"""
+        mock_iter.return_value = []
+        result = check_local_inventory()
+        assert "No models" in result
+
+
+class TestCheckRemotePackages:
+    @patch("junos_mcp.server.upgrade.check_remote_package_by_model")
+    @patch("junos_ops.common.connect")
+    def test_with_explicit_model(self, mock_connect, mock_remote, mock_config):
+        """model 引数で device facts を引かずに remote check"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {
+            "hostname": "rt1.example.jp", "host": "rt1.example.jp",
+            "ok": True, "dev": mock_dev, "error": None, "error_message": None,
+        }
+        mock_remote.return_value = {
+            "file": "mx204.tgz", "remote_path": "/var/tmp/mx204.tgz",
+            "status": "ok", "cached": False, "message": "ok",
+            "actual_hash": "abc", "expected_hash": "abc", "error": None,
+        }
+        result = check_remote_packages(["rt1.example.jp"], model="mx204", max_workers=1)
+        assert "rt1.example.jp" in result
+        assert "ok" in result
+        # explicit model なので gather_facts=False で接続
+        _, kwargs = mock_connect.call_args
+        assert kwargs.get("gather_facts") is False
+        mock_remote.assert_called_once_with("rt1.example.jp", mock_dev, "mx204")
+
+    @patch("junos_ops.common.connect")
+    def test_connect_failure(self, mock_connect, mock_config):
+        """接続失敗時は remote check は実行されない"""
+        mock_connect.return_value = {
+            "hostname": "rt1.example.jp", "host": "rt1.example.jp",
+            "ok": False, "dev": None, "error": "ConnectError",
+            "error_message": "auth failed",
+        }
+        result = check_remote_packages(["rt1.example.jp"], model="mx204", max_workers=1)
+        assert "fail" in result
+        assert "auth failed" in result
 
 
 # --- push_config ---

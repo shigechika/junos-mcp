@@ -74,6 +74,11 @@ README.ja.md            # 日本語版
 - `collect_rsi` — RSI/SCF 収集（モデル別タイムアウト付き）
 - `collect_rsi_batch` — 複数デバイスからの RSI/SCF 並列収集
 
+#### MCP ツール — プリフライトチェック（3）
+- `check_reachability` — NETCONF 到達性のみ高速確認（`junos-ops check --connect` 相当）
+- `check_local_inventory` — config.ini インベントリのローカルチェックサム検証（`--local`、デバイス接続不要）
+- `check_remote_packages` — デバイス側ファームウェアチェックサム検証（`--remote`）
+
 #### 共通パラメータ
 - `hostname`: 接続先ホスト名（config.ini に存在する必要あり、必須）
 - `config_path`: config.ini のパス（省略時は環境変数 or デフォルト探索）
@@ -111,7 +116,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-69 テスト（グローバル初期化、config パス解決、接続管理、19 ツールの動作検証、バージョン整合性）。
+76 テスト（グローバル初期化、config パス解決、接続管理、22 ツールの動作検証、バージョン整合性）。
 
 ## バージョン管理
 

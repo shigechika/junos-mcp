@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-16
+
+### Added
+- Three new MCP tools wrapping the `junos-ops check` subcommand
+  (closes [#4](https://github.com/shigechika/junos-mcp/issues/4)):
+  - `check_reachability` — fast NETCONF reachability probe
+    (`gather_facts=False`, 5 s TCP probe). Mirrors `junos-ops check --connect`.
+  - `check_local_inventory` — verify local firmware checksums against the
+    `config.ini` `<model>.file` / `<model>.hash` inventory. No device
+    connection required. Mirrors `--local`.
+  - `check_remote_packages` — verify the staged firmware checksum on each
+    device. Doubles as post-SCP copy verification. Mirrors `--remote`.
+- All three reuse `junos_ops.display.format_check_table` /
+  `format_check_local_inventory` for rendering. Tag filter accepts the
+  same AND/OR grammar as the other batch tools.
+
 ## [0.9.0] - 2026-04-16
 
 ### Fixed

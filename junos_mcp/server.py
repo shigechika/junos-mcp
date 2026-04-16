@@ -1,7 +1,8 @@
 """MCP server exposing junos-ops device operations.
 
-Provides 19 tools for Juniper Networks device management: device info,
-CLI execution, config management, firmware upgrade, and RSI/SCF collection.
+Provides 22 tools for Juniper Networks device management: device info,
+CLI execution, config management, firmware upgrade, RSI/SCF collection,
+and pre-flight checks.
 
 Supports STDIO and Streamable HTTP transports.
 
@@ -569,6 +570,229 @@ def collect_rsi_batch(
     results = common.run_parallel(_run_one, targets, max_workers=max_workers)
     parts = [results[h] for h in targets if h in results]
     return "\n\n".join(parts)
+
+
+def _resolve_check_model(hostname: str, explicit: str | None) -> tuple[str | None, str | None]:
+    """Resolve check model in junos-ops priority order: arg > config.ini > None.
+
+    Device-facts fallback is intentionally skipped here; per-host check
+    tools that connect can fetch it themselves via ``dev.facts``. Returns
+    ``(model, source)`` where ``source`` is ``"cli"`` / ``"config"`` /
+    ``None``.
+    """
+    if explicit:
+        return explicit, "cli"
+    try:
+        cfg_model = common.config.get(hostname, "model")
+        if cfg_model:
+            return cfg_model, "config"
+    except Exception:
+        pass
+    return None, None
+
+
+def _check_one_host(hostname: str, do_connect: bool, do_remote: bool, explicit_model: str | None) -> dict:
+    """Per-host check worker mirroring junos-ops cli._check_host.
+
+    Re-implemented here (rather than calling the underscore-prefixed CLI
+    helper) to avoid an extra coupling point. Uses the public
+    ``upgrade.check_remote_package_by_model`` and ``common.connect``
+    APIs with ``gather_facts=False`` + ``auto_probe=5`` for speed.
+    """
+    model, source = _resolve_check_model(hostname, explicit_model)
+    row: dict = {
+        "hostname": hostname,
+        "model": model,
+        "model_source": source,
+        "connect": None,
+        "remote": None,
+    }
+    if not (do_connect or do_remote):
+        return row
+
+    need_facts = do_remote and model is None
+    conn = common.connect(hostname, gather_facts=need_facts, auto_probe=5)
+    if not conn["ok"]:
+        row["connect"] = {
+            "ok": False,
+            "message": conn.get("error_message") or "connect failed",
+            "error": conn.get("error"),
+        }
+        return row
+
+    dev = conn["dev"]
+    row["connect"] = {"ok": True, "message": "connected", "error": None}
+    try:
+        if do_remote and model is None:
+            try:
+                facts_model = dev.facts.get("model") if need_facts else None
+                if facts_model:
+                    model = facts_model
+                    source = "device"
+                else:
+                    elem = dev.rpc.get_software_information().find(".//product-model")
+                    if elem is not None and elem.text:
+                        model = elem.text
+                        source = "device"
+            except Exception:
+                pass
+            row["model"] = model
+            row["model_source"] = source
+
+        if do_remote:
+            if model:
+                try:
+                    row["remote"] = upgrade.check_remote_package_by_model(hostname, dev, model)
+                except Exception as e:
+                    row["remote"] = {
+                        "status": "unchecked",
+                        "message": f"recipe lookup failed: {e}",
+                        "file": None,
+                        "cached": False,
+                        "error": type(e).__name__,
+                    }
+            else:
+                row["remote"] = {
+                    "status": "unchecked",
+                    "message": "model unknown",
+                    "file": None,
+                    "cached": False,
+                }
+    finally:
+        try:
+            dev.close()
+        except Exception:
+            pass
+    return row
+
+
+@mcp.tool()
+def check_reachability(
+    hostnames: list[str] | None = None,
+    tags: list[str] | None = None,
+    max_workers: int = 20,
+    config_path: str = "",
+) -> str:
+    """Probe NETCONF reachability for one or more devices.
+
+    Equivalent to ``junos-ops check --connect``. Opens a fast NETCONF
+    handshake (no full PyEZ facts gathering, 5-second TCP probe) and
+    reports per-host status as a table.
+
+    Args:
+        hostnames: List of target device hostnames (must exist in config.ini)
+        tags: Tag filter. Each list element is one tag group (comma-separated
+            tags AND together within a group); multiple list elements OR
+            together across groups. Combined with ``hostnames`` the result is
+            the intersection.
+        max_workers: Maximum parallel threads (default 20, matches junos-ops)
+        config_path: Path to config.ini (empty string uses default search)
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return err
+    targets = _resolve_hostnames(hostnames, tags)
+    if isinstance(targets, str):
+        return targets
+
+    def _run_one(hostname):
+        return _check_one_host(hostname, do_connect=True, do_remote=False, explicit_model=None)
+
+    results = common.run_parallel(_run_one, targets, max_workers=max_workers)
+    rows = [results[h] for h in targets if h in results]
+    return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=False)
+
+
+@mcp.tool()
+def check_local_inventory(model: str = "", config_path: str = "") -> str:
+    """Verify local firmware checksums against the config.ini inventory.
+
+    Equivalent to ``junos-ops check --local``. Iterates every
+    ``<model>.file`` / ``<model>.hash`` pair in the DEFAULT section of
+    ``config.ini`` and verifies the file on the staging server. No
+    device connection required.
+
+    Args:
+        model: Restrict to a single model (empty = all configured models)
+        config_path: Path to config.ini (empty string uses default search)
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return err
+    models = [model] if model else upgrade.iter_configured_models()
+    rows: list[dict] = []
+    for m in models:
+        try:
+            r = upgrade.check_local_package_by_model("DEFAULT", m)
+            rows.append({
+                "model": m,
+                "file": r.get("file"),
+                "local_file": r.get("local_file"),
+                "status": r.get("status"),
+                "cached": r.get("cached"),
+                "actual_hash": r.get("actual_hash"),
+                "expected_hash": r.get("expected_hash"),
+                "message": r.get("message"),
+                "error": r.get("error"),
+            })
+        except Exception as e:
+            rows.append({
+                "model": m,
+                "file": None,
+                "local_file": None,
+                "status": "error",
+                "cached": False,
+                "actual_hash": None,
+                "expected_hash": None,
+                "message": f"config lookup failed: {e}",
+                "error": type(e).__name__,
+            })
+    if not rows:
+        return "No models with <model>.file entries found in config.ini DEFAULT section."
+    return display.format_check_local_inventory(rows)
+
+
+@mcp.tool()
+def check_remote_packages(
+    hostnames: list[str] | None = None,
+    tags: list[str] | None = None,
+    model: str = "",
+    max_workers: int = 20,
+    config_path: str = "",
+) -> str:
+    """Verify the staged firmware checksum on one or more devices.
+
+    Equivalent to ``junos-ops check --remote``. Connects to each device
+    via NETCONF and verifies the package file (``<model>.file``) sitting
+    on the device against ``<model>.hash``. Doubles as post-SCP copy
+    verification. Per-host model resolution: ``model`` arg > config.ini
+    ``[host].model`` > device facts.
+
+    Args:
+        hostnames: List of target device hostnames (must exist in config.ini)
+        tags: Tag filter. Each list element is one tag group (comma-separated
+            tags AND together within a group); multiple list elements OR
+            together across groups. Combined with ``hostnames`` the result is
+            the intersection.
+        model: Override model resolution for all hosts (empty = per-host resolution)
+        max_workers: Maximum parallel threads (default 20)
+        config_path: Path to config.ini (empty string uses default search)
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return err
+    targets = _resolve_hostnames(hostnames, tags)
+    if isinstance(targets, str):
+        return targets
+
+    explicit = model or None
+
+    def _run_one(hostname):
+        return _check_one_host(hostname, do_connect=True, do_remote=True, explicit_model=explicit)
+
+    results = common.run_parallel(_run_one, targets, max_workers=max_workers)
+    rows = [results[h] for h in targets if h in results]
+    return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=True)
 
 
 @mcp.tool()
