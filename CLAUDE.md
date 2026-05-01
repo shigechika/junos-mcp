@@ -24,10 +24,12 @@ junos-mcpは、[junos-ops](https://github.com/shigechika/junos-ops) の機能を
 junos_mcp/
 ├── __init__.py         # パッケージ定義、__version__
 ├── __main__.py         # python -m junos_mcp 対応
-└── server.py           # FastMCP サーバー定義、19ツール実装
+├── pool.py             # per-host NETCONF 接続プール（ConnectionPool、get_pool）
+└── server.py           # FastMCP サーバー定義、22ツール実装
 tests/
 ├── __init__.py
-├── test_server.py              # 67 ユニットテスト
+├── test_pool.py                # 14 ユニットテスト（ConnectionPool）
+├── test_server.py              # 78 ユニットテスト
 └── test_version_consistency.py # バージョン整合性テスト
 pyproject.toml          # パッケージメタデータ、依存関係
 LICENSE                 # Apache License 2.0
@@ -37,13 +39,20 @@ README.ja.md            # 日本語版
 
 ## モジュール構成
 
+### pool.py — 接続プール
+
+- `ConnectionPool` — per-host NETCONF 接続プール。`acquire(hostname, config_path)` context manager で checkout/checkin。per-host `threading.Lock` を操作全体で保持し PyEZ `Device` のスレッドセーフ問題を回避。アイドルタイムアウト超過・`dev.connected==False` で自動退場・再接続。
+- `PoolConnectionError` — 接続失敗時に `acquire()` が raise する例外。
+- `get_pool()` — モジュールレベルシングルトンを lazy init して返す。`JUNOS_MCP_POOL=0` で `None` を返す（プール無効）。
+- 環境変数: `JUNOS_MCP_POOL`（無効化）・`JUNOS_MCP_POOL_IDLE`（アイドルタイムアウト秒、デフォルト 60）
+
 ### server.py — MCP サーバー
 
 #### ヘルパー関数
 - `_resolve_config_path()` — config パス解決（引数 > `JUNOS_OPS_CONFIG` 環境変数 > デフォルト探索）
 - `_init_globals()` — junos-ops グローバル状態の初期化（`common.args` / `common.config`）
 - `_ensure_config()` — 初期化済みチェック付きの初期化ラッパー
-- `_connect_and_run()` — 接続→操作→close を一元化
+- `_connect_and_run()` — 接続プール経由（または直接）でデバイスに接続し操作を実行
 
 #### MCP ツール — デバイス情報（3）
 - `get_device_facts` — デバイス基本情報（`dev.facts`）
@@ -116,7 +125,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-76 テスト（グローバル初期化、config パス解決、接続管理、22 ツールの動作検証、バージョン整合性）。
+94 テスト（グローバル初期化、config パス解決、接続プール、22 ツールの動作検証、バージョン整合性）。
 
 ## バージョン管理
 

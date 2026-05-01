@@ -21,8 +21,8 @@ import atexit
 import os
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Generator
 
 from junos_ops import common
 
@@ -61,7 +61,7 @@ class ConnectionPool:
         self._entries: dict[tuple[str, str], _Entry] = {}
 
     @contextmanager
-    def acquire(self, hostname: str, config_path: str) -> Generator:
+    def acquire(self, hostname: str, config_path: str) -> Iterator:
         """Yield a connected Device for *hostname*, then return it to the pool.
 
         The per-host lock is held for the entire duration of the ``with``
