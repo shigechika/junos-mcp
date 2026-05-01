@@ -603,7 +603,7 @@ class TestRunShowCommandBatch:
 
     @patch("junos_ops.common.connect")
     def test_grep_pattern_matches(self, mock_connect, mock_config):
-        """grep_pattern にマッチする行だけが返る"""
+        """grep_pattern にマッチする行だけが返る（ヘッダー行は保持）"""
         mock_dev = MagicMock()
         mock_dev.cli.return_value = "inet.0: 100 destinations\ninet6.0: 50 destinations\n"
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
@@ -613,6 +613,7 @@ class TestRunShowCommandBatch:
             grep_pattern=r"inet\.0:",
         )
         assert "rt1.example.jp" in result
+        assert "## show route summary" in result
         assert "inet.0:" in result
         assert "inet6.0:" not in result
 
@@ -638,6 +639,18 @@ class TestRunShowCommandBatch:
             grep_pattern=r"[invalid",
         )
         assert "Error: invalid grep_pattern" in result
+
+    @patch("junos_ops.common.connect")
+    def test_grep_pattern_connection_error_not_hidden(self, mock_connect, mock_config):
+        """接続エラーは grep_pattern でフィルタされず、そのまま返る"""
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": False, "dev": None, "error": "ConnectError", "error_message": "connection refused"}
+        result = run_show_command_batch(
+            "show version",
+            hostnames=["rt1.example.jp"],
+            grep_pattern=r"inet\.0:",
+        )
+        assert "Connection error" in result
+        assert "(no match)" not in result
 
 
 # --- get_config ---

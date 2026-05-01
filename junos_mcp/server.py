@@ -284,18 +284,20 @@ def run_show_command_batch(
         output = run_show_command(hostname, command, config_path)
         if compiled is None:
             return output
-        filtered = []
-        content_lines = []
+        # 接続エラーやコマンドエラーはヘッダーなし — フィルタせずそのまま返す
+        if not output.startswith("#"):
+            return output
+        lines = []
+        has_match = False
         for line in output.splitlines():
             if line.startswith("#"):
-                filtered.append(line)
+                lines.append(line)
             elif compiled.search(line):
-                content_lines.append(line)
-        if content_lines:
-            filtered.extend(content_lines)
-        else:
-            filtered.append("(no match)")
-        return "\n".join(filtered)
+                lines.append(line)
+                has_match = True
+        if not has_match:
+            lines.append("(no match)")
+        return "\n".join(lines)
 
     results = common.run_parallel(_run_one, targets, max_workers=max_workers)
     parts = [results[h] for h in targets if h in results]
