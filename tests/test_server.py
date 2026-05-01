@@ -601,6 +601,44 @@ class TestRunShowCommandBatch:
         )
         assert "not found in config" in result
 
+    @patch("junos_ops.common.connect")
+    def test_grep_pattern_matches(self, mock_connect, mock_config):
+        """grep_pattern にマッチする行だけが返る"""
+        mock_dev = MagicMock()
+        mock_dev.cli.return_value = "inet.0: 100 destinations\ninet6.0: 50 destinations\n"
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        result = run_show_command_batch(
+            "show route summary",
+            hostnames=["rt1.example.jp"],
+            grep_pattern=r"inet\.0:",
+        )
+        assert "rt1.example.jp" in result
+        assert "inet.0:" in result
+        assert "inet6.0:" not in result
+
+    @patch("junos_ops.common.connect")
+    def test_grep_pattern_no_match(self, mock_connect, mock_config):
+        """grep_pattern にマッチする行がない場合は (no match) が返る"""
+        mock_dev = MagicMock()
+        mock_dev.cli.return_value = "inet.0: 100 destinations\n"
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        result = run_show_command_batch(
+            "show route summary",
+            hostnames=["rt1.example.jp"],
+            grep_pattern=r"mpls\.0:",
+        )
+        assert "rt1.example.jp" in result
+        assert "(no match)" in result
+
+    def test_grep_pattern_invalid(self, mock_config):
+        """不正な正規表現は即エラーを返す"""
+        result = run_show_command_batch(
+            "show version",
+            hostnames=["rt1.example.jp"],
+            grep_pattern=r"[invalid",
+        )
+        assert "Error: invalid grep_pattern" in result
+
 
 # --- get_config ---
 

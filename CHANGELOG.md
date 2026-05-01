@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `run_show_command_batch`: new optional `grep_pattern` parameter (Python `re`
+  pattern). When set, only lines matching the pattern are kept from each host's
+  output; header lines (`#`-prefixed) are always preserved; hosts with no match
+  show `(no match)`. Reduces large batch outputs (e.g. 93 routers ×
+  `show route summary`) from hundreds of KB to a few hundred bytes, enabling
+  inline result handling without tool-results file I/O.
+
 ## [0.11.0] - 2026-04-16
 
 ### Changed
