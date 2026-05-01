@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import junos_mcp.pool as pool_module
 from junos_ops import common
 from junos_mcp.server import (
     _connect_and_run,
@@ -46,6 +47,14 @@ def reset_globals():
     yield
     common.args = original_args
     common.config = original_config
+
+
+@pytest.fixture(autouse=True)
+def reset_pool():
+    """テスト間でプールキャッシュが干渉しないようシングルトンをリセット"""
+    pool_module._pool = None
+    yield
+    pool_module._pool = None
 
 
 @pytest.fixture
@@ -234,14 +243,14 @@ class TestConnectAndRun:
 
     @patch("junos_ops.common.connect")
     def test_successful_operation(self, mock_connect, mock_config):
-        """正常な操作の実行"""
+        """正常な操作の実行（プール有効時はデバイスを閉じずに再利用）"""
         mock_dev = MagicMock()
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = _connect_and_run(
             "rt1.example.jp", "", lambda h, d: f"success: {h}"
         )
         assert result == "success: rt1.example.jp"
-        mock_dev.close.assert_called_once()
+        mock_dev.close.assert_not_called()
 
     @patch("junos_ops.common.connect")
     def test_device_closed_on_exception(self, mock_connect, mock_config):

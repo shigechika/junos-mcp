@@ -30,6 +30,8 @@ from junos_ops import display
 from junos_ops import rsi
 from junos_ops import upgrade
 
+from junos_mcp.pool import PoolConnectionError, get_pool
+
 mcp = FastMCP("junos-mcp")
 
 
@@ -98,6 +100,12 @@ def _ensure_config(config_path: str) -> str | None:
 def _connect_and_run(hostname: str, config_path: str, operation):
     """Connect to device and run operation, returning formatted result.
 
+    Uses the per-host connection pool when JUNOS_MCP_POOL != 0 (the
+    default).  The pool reuses an idle Device across calls, serialising
+    concurrent operations for the same host through a per-host lock.
+    Set JUNOS_MCP_POOL=0 to fall back to the original open-close-per-call
+    behaviour.
+
     :param hostname: Target hostname (must exist in config.ini).
     :param config_path: Path to config.ini.
     :param operation: Callable(hostname, dev) -> str. Receives connected device.
@@ -115,13 +123,21 @@ def _connect_and_run(hostname: str, config_path: str, operation):
     if not common.config.has_option(hostname, "host") or common.config.get(hostname, "host") is None:
         common.config.set(hostname, "host", hostname)
 
-    # connect() returns a dict in junos-ops 0.14.0+.
+    pool = get_pool()
+    if pool is not None:
+        norm_path = _resolve_config_path(config_path)
+        try:
+            with pool.acquire(hostname, norm_path) as dev:
+                return operation(hostname, dev)
+        except PoolConnectionError as e:
+            return f"Connection error: {e}"
+
+    # Pool disabled — original open-close-per-call path.
     conn = common.connect(hostname)
     if not conn["ok"]:
         msg = conn.get("error_message") or conn.get("error") or "Connection failed"
         return f"Connection error: {msg}"
     dev = conn["dev"]
-
     try:
         return operation(hostname, dev)
     finally:

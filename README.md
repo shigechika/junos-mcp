@@ -163,6 +163,22 @@ run_show_command_batch(
 )
 ```
 
+## Connection pool
+
+junos-mcp maintains a per-host NETCONF connection pool.  Reusing an idle
+`Device` avoids the TCP/NETCONF handshake on every tool call; the pool
+serialises concurrent operations on the same host through a per-host lock.
+
+| Environment variable | Default | Description |
+|----------------------|---------|-------------|
+| `JUNOS_MCP_POOL` | `1` (enabled) | Set to `0` to disable the pool and open a fresh connection per call |
+| `JUNOS_MCP_POOL_IDLE` | `60` | Idle timeout in seconds. Connections unused longer than this are closed on the next call. Set to `0` to disable eviction |
+
+**Security note:** pooled connections are long-lived SSH sessions.  In
+environments where session duration is restricted by policy, set
+`JUNOS_MCP_POOL_IDLE` to a value shorter than the inactivity limit, or set
+`JUNOS_MCP_POOL=0` to disable the pool entirely.
+
 ## Configuration
 
 This server uses the same `config.ini` as junos-ops. See [junos-ops README](https://github.com/shigechika/junos-ops) for details.
@@ -263,7 +279,7 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-79 tests covering all 22 tools, helper functions, and edge cases.
+94 tests covering all 22 tools, the connection pool, helper functions, and edge cases.
 
 ## Architecture
 

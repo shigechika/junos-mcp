@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   show `(no match)`. Reduces large batch outputs (e.g. 93 routers ×
   `show route summary`) from hundreds of KB to a few hundred bytes, enabling
   inline result handling without tool-results file I/O.
+- Per-host NETCONF connection pool (`junos_mcp/pool.py`).  The pool reuses
+  idle PyEZ `Device` connections across tool calls, serialising concurrent
+  operations on the same host through a per-host `threading.Lock`.  Enabled
+  by default; controlled by two environment variables:
+  - `JUNOS_MCP_POOL=0` — disable the pool (each call opens a fresh connection,
+    same as before this release).
+  - `JUNOS_MCP_POOL_IDLE=<seconds>` — idle timeout in seconds (default `60`).
+    A connection unused for longer than this is closed and reopened on the
+    next call.  Set to `0` to disable idle eviction.
 
 ## [0.11.0] - 2026-04-16
 
