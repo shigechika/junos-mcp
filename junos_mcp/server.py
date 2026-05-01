@@ -18,6 +18,7 @@ module, so the MCP STDIO JSON-RPC channel is safe by construction.
 import argparse
 import os
 import os.path
+import re
 from pprint import pformat
 
 from lxml import etree
@@ -238,6 +239,7 @@ def run_show_command_batch(
     command: str,
     hostnames: list[str] | None = None,
     tags: list[str] | None = None,
+    grep_pattern: str | None = None,
     max_workers: int = 5,
     config_path: str = "",
 ) -> str:
@@ -255,6 +257,11 @@ def run_show_command_batch(
             together across groups. E.g. ``["tokyo,core", "backup"]`` means
             ``(tokyo AND core) OR backup``. Combined with ``hostnames`` the
             result is the intersection.
+        grep_pattern: Optional Python ``re`` pattern. When set, only lines
+            matching the pattern (via ``re.search``) are kept from each
+            host's output. Header lines (starting with ``#``) are always
+            preserved. Hosts with no matching lines show ``(no match)``.
+            Reduces large batch outputs to the essential lines.
         max_workers: Maximum parallel threads (default 5)
         config_path: Path to config.ini (empty string uses default search)
     """
@@ -262,12 +269,35 @@ def run_show_command_batch(
     if err:
         return err
 
+    compiled = None
+    if grep_pattern:
+        try:
+            compiled = re.compile(grep_pattern)
+        except re.error as exc:
+            return f"Error: invalid grep_pattern: {exc}"
+
     targets = _resolve_hostnames(hostnames, tags)
     if isinstance(targets, str):
         return targets
 
     def _run_one(hostname):
-        return run_show_command(hostname, command, config_path)
+        output = run_show_command(hostname, command, config_path)
+        if compiled is None:
+            return output
+        # 接続エラーやコマンドエラーはヘッダーなし — フィルタせずそのまま返す
+        if not output.startswith("#"):
+            return output
+        lines = []
+        has_match = False
+        for line in output.splitlines():
+            if line.startswith("#"):
+                lines.append(line)
+            elif compiled.search(line):
+                lines.append(line)
+                has_match = True
+        if not has_match:
+            lines.append("(no match)")
+        return "\n".join(lines)
 
     results = common.run_parallel(_run_one, targets, max_workers=max_workers)
     parts = [results[h] for h in targets if h in results]

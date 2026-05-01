@@ -27,7 +27,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 |------|-------------|:----------:|
 | `run_show_command` | Run a single CLI show command | Yes |
 | `run_show_commands` | Run multiple CLI commands in a single session | Yes |
-| `run_show_command_batch` | Run a command on multiple devices in parallel (supports tag filter) | Yes |
+| `run_show_command_batch` | Run a command on multiple devices in parallel (supports tag filter and `grep_pattern`) | Yes |
 
 ### Configuration Management
 
@@ -148,6 +148,21 @@ run_show_command_batch(
 
 See the [junos-ops tag documentation](https://github.com/shigechika/junos-ops#tag-based-host-filtering) for how to tag sections in `config.ini` and for the matching CLI grammar.
 
+## Server-side output filtering
+
+`run_show_command_batch` accepts an optional `grep_pattern` argument (Python `re` pattern). When set, only lines matching the pattern are kept from each host's output. Header lines (starting with `#`) are always preserved. Hosts with no matching lines show `(no match)`.
+
+This reduces large batch results — for example, 93 routers × `show route summary` — from hundreds of KB to a few hundred bytes by extracting just the relevant lines:
+
+```python
+# Extract only the inet.0 destination count from 93 routers
+run_show_command_batch(
+    command="show route summary",
+    tags=["main"],
+    grep_pattern=r"inet\.0:\s+\d+ destinations",
+)
+```
+
 ## Configuration
 
 This server uses the same `config.ini` as junos-ops. See [junos-ops README](https://github.com/shigechika/junos-ops) for details.
@@ -248,7 +263,7 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-69 tests covering all 19 tools, helper functions, and edge cases.
+79 tests covering all 22 tools, helper functions, and edge cases.
 
 ## Architecture
 
