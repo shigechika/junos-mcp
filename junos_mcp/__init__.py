@@ -5,4 +5,4 @@ file listing, device facts) to MCP-compatible AI assistants via STDIO
 transport.
 """
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
