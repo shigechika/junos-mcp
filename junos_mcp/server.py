@@ -16,6 +16,7 @@ module, so the MCP STDIO JSON-RPC channel is safe by construction.
 """
 
 import argparse
+import datetime
 import os
 import os.path
 import re
@@ -32,6 +33,17 @@ from junos_ops import show
 from junos_ops import upgrade
 
 from junos_mcp.pool import PoolConnectionError, get_pool
+
+_SYSLOG_ALERT_RE = re.compile(
+    r"RPD_BGP_NEIGHBOR_STATE_CHANGED.*Established->"
+    r"|ESWD_STP_PORT_ROLE_CHANGE"
+    r"|OSPF.*neighbor.*down"
+    r"|KERN_ARP_ADDR_CHANGE"
+    r"|IF_DOWN",
+    re.IGNORECASE,
+)
+_IF_DOWN_RE = re.compile(r"^(\S+)\s+up\s+down", re.MULTILINE)
+_SYSLOG_MAX_MATCHES = 10
 
 mcp = FastMCP("junos-mcp")
 
@@ -1166,6 +1178,233 @@ def schedule_reboot(
         )
 
     return _connect_and_run(hostname, config_path, _operation)
+
+
+def _syslog_line_dt(line: str) -> "datetime.datetime | None":
+    """Parse the leading timestamp of a JunOS syslog line.
+
+    JunOS syslog format: ``MMM DD HH:MM:SS[.mmm] hostname ...``
+    No year is embedded; infer it by checking if the parsed date is in the
+    future (year rollover at Jan 1).  Returns None on any parse failure.
+    """
+    parts = line.split(None, 3)
+    if len(parts) < 3:
+        return None
+    try:
+        month = datetime.datetime.strptime(parts[0], "%b").month
+        day = int(parts[1])
+        time_str = parts[2].split(".")[0]
+        h, m, s = time_str.split(":")
+        now = datetime.datetime.now()
+        dt = datetime.datetime(now.year, month, day, int(h), int(m), int(s))
+        if dt > now + datetime.timedelta(hours=1):
+            dt = dt.replace(year=now.year - 1)
+        return dt
+    except Exception:
+        return None
+
+
+def _check_host_health(hostname: str, dev, since_hours: int) -> dict:
+    """Run four health checks on a single connected device.
+
+    Returns a dict with keys:
+      - ``hostname``: str
+      - ``anomalies``: list[str] — tagged anomaly lines
+      - ``error``: None (always None when this function is called; connection
+        errors are caught in the caller)
+    """
+    anomalies: list[str] = []
+
+    # 1. System alarms
+    try:
+        out = dev.cli("show system alarms", warning=False)
+        if "No alarms" not in out:
+            lines = [
+                ln.strip()
+                for ln in out.splitlines()
+                if ln.strip()
+                and not ln.strip().lower().startswith("alarm time")
+                and not re.match(r"\d+ alarms? currently active", ln.strip())
+            ]
+            for ln in lines[:5]:
+                anomalies.append(f"[ALARM] {ln[:100]}")
+    except Exception as exc:
+        anomalies.append(f"[CHECK_ERROR] system alarms: {exc}")
+
+    # 2. Chassis alarms
+    try:
+        out = dev.cli("show chassis alarms", warning=False)
+        if "No alarms" not in out:
+            lines = [
+                ln.strip()
+                for ln in out.splitlines()
+                if ln.strip()
+                and not ln.strip().lower().startswith("alarm time")
+                and not re.match(r"\d+ alarms? currently active", ln.strip())
+            ]
+            for ln in lines[:5]:
+                anomalies.append(f"[CHASSIS_ALARM] {ln[:100]}")
+    except Exception as exc:
+        anomalies.append(f"[CHECK_ERROR] chassis alarms: {exc}")
+
+    # 3. Interface down
+    try:
+        out = dev.cli("show interfaces terse", warning=False)
+        down_ifs = [
+            m.group(1)
+            for m in _IF_DOWN_RE.finditer(out)
+            if not m.group(1).startswith("lo")
+        ]
+        for iface in down_ifs:
+            anomalies.append(f"[IF_DOWN] {iface}")
+    except Exception as exc:
+        anomalies.append(f"[CHECK_ERROR] interfaces terse: {exc}")
+
+    # 4. Syslog alert patterns within the time window
+    try:
+        out = dev.cli("show log messages | last 200", warning=False)
+        cutoff = datetime.datetime.now() - datetime.timedelta(hours=since_hours)
+        count = 0
+        for line in out.splitlines():
+            if count >= _SYSLOG_MAX_MATCHES:
+                anomalies.append(f"[SYSLOG] ... ({count}+ matches, truncated)")
+                break
+            dt = _syslog_line_dt(line)
+            if dt is None or dt < cutoff:
+                continue
+            if _SYSLOG_ALERT_RE.search(line):
+                anomalies.append(f"[SYSLOG] {line[:120]}")
+                count += 1
+    except Exception as exc:
+        anomalies.append(f"[CHECK_ERROR] syslog: {exc}")
+
+    return {"hostname": hostname, "anomalies": anomalies, "error": None}
+
+
+@mcp.tool()
+def daily_brief(
+    hostnames: list[str] | None = None,
+    tags: list[str] | None = None,
+    since_hours: int = 18,
+    max_workers: int = 10,
+    config_path: str = "",
+) -> str:
+    """Run a morning health check across multiple devices in parallel.
+
+    Checks per host (Phase 1):
+    - ``show system alarms`` / ``show chassis alarms``
+    - ``show interfaces terse`` — interface up/down (loopback excluded)
+    - ``show log messages | last 200`` — alert patterns within ``since_hours``
+
+    Syslog patterns watched: BGP state change away from Established, STP port
+    role change, OSPF neighbor down, ARP address conflict, IF_DOWN.
+
+    ``since_hours`` defaults to 18 (≈ previous 15:00 for a 09:00 morning run).
+    Tags default to none (all routers); pass ``tags=["main"]`` to limit scope.
+
+    Output tiers:
+    - CRITICAL — connection failure
+    - WARNING  — at least one anomaly found
+    - OK       — clean
+
+    Returns a Markdown summary with anomaly details for CRITICAL/WARNING hosts
+    and a collapsed OK list.
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return err
+
+    targets = _resolve_hostnames(hostnames, tags)
+    if isinstance(targets, str):
+        return targets
+
+    norm_path = _resolve_config_path(config_path)
+
+    # Pre-populate host option to avoid a ConfigParser race inside threads
+    for hostname in targets:
+        if not common.config.has_option(hostname, "host"):
+            common.config.set(hostname, "host", hostname)
+
+    pool = get_pool()
+
+    def _run_one(hostname: str) -> dict:
+        if pool is not None:
+            try:
+                with pool.acquire(hostname, norm_path) as dev:
+                    return _check_host_health(hostname, dev, since_hours)
+            except PoolConnectionError as exc:
+                return {
+                    "hostname": hostname,
+                    "anomalies": [f"[UNREACHABLE] {exc}"],
+                    "error": str(exc),
+                }
+        conn = common.connect(hostname)
+        if not conn.get("ok"):
+            msg = conn.get("error_message") or conn.get("error") or "Connection failed"
+            return {
+                "hostname": hostname,
+                "anomalies": [f"[UNREACHABLE] {msg}"],
+                "error": msg,
+            }
+        dev = conn["dev"]
+        try:
+            return _check_host_health(hostname, dev, since_hours)
+        finally:
+            try:
+                dev.close()
+            except Exception:
+                pass
+
+    results = common.run_parallel(_run_one, targets, max_workers=max_workers)
+
+    now_str = (
+        datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
+    )
+
+    criticals, warnings, oks = [], [], []
+    for hostname in targets:
+        row = results.get(
+            hostname,
+            {
+                "hostname": hostname,
+                "anomalies": ["[UNREACHABLE] no result"],
+                "error": "no result",
+            },
+        )
+        if row.get("error"):
+            criticals.append(row)
+        elif row.get("anomalies"):
+            warnings.append(row)
+        else:
+            oks.append(row)
+
+    lines: list[str] = [
+        f"## daily_brief — {now_str} (since -{since_hours}h)",
+        f"## {len(targets)} hosts: "
+        f"{len(oks)} OK, {len(warnings)} WARNING, {len(criticals)} CRITICAL",
+        "",
+    ]
+
+    if criticals:
+        lines.append("### CRITICAL")
+        for row in criticals:
+            lines.append(f"- **{row['hostname']}**: {row['error']}")
+        lines.append("")
+
+    if warnings:
+        lines.append("### WARNINGS")
+        for row in warnings:
+            lines.append(f"#### {row['hostname']}")
+            for anomaly in row["anomalies"]:
+                lines.append(f"- {anomaly}")
+        lines.append("")
+
+    ok_names = ", ".join(r["hostname"] for r in oks)
+    lines.append(f"### OK hosts ({len(oks)})")
+    if ok_names:
+        lines.append(ok_names)
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

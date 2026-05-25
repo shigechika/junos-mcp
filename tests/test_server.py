@@ -10,10 +10,12 @@ import pytest
 import junos_mcp.pool as pool_module
 from junos_ops import common
 from junos_mcp.server import (
+    _check_host_health,
     _connect_and_run,
     _ensure_config,
     _init_globals,
     _resolve_config_path,
+    _syslog_line_dt,
     check_local_inventory,
     check_reachability,
     check_remote_packages,
@@ -22,6 +24,7 @@ from junos_mcp.server import (
     collect_rsi_batch,
     compare_version,
     copy_package,
+    daily_brief,
     install_package,
     push_config,
     rollback_package,
@@ -1324,3 +1327,167 @@ class TestScheduleReboot:
         result = schedule_reboot("rt1.example.jp", "2601020304", dry_run=False)
         assert "FAILED" in result
         assert "code=4" in result
+
+
+# --- _syslog_line_dt ---
+
+
+class TestSyslogLineDt:
+    def test_valid_line(self):
+        """正常なタイムスタンプをパースできる"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        line = f"Jan 15 10:30:00 rt1 %DAEMON-3: something happened"
+        result = _syslog_line_dt(line)
+        assert result is not None
+        assert result.month == 1
+        assert result.day == 15
+        assert result.hour == 10
+        assert result.minute == 30
+        assert result.second == 0
+
+    def test_subsecond_stripped(self):
+        """小数秒付きタイムスタンプも正しくパースできる"""
+        line = "Mar  5 08:00:00.123 rt1 %DAEMON: msg"
+        result = _syslog_line_dt(line)
+        assert result is not None
+        assert result.month == 3
+        assert result.second == 0
+
+    def test_year_rollover(self):
+        """未来の日付は前年として扱う（年末ロールオーバー）"""
+        import datetime as _dt
+        # 12月31日のログが 1月1日に処理される場合を模擬
+        # 未来1時間超 → 前年
+        line = "Dec 31 23:59:59 rt1 %DAEMON: msg"
+        result = _syslog_line_dt(line)
+        assert result is not None
+        now = _dt.datetime.now()
+        # 未来の場合は前年になるはず（テスト実行タイミング依存だが大半OK）
+        if result > now + _dt.timedelta(hours=1):
+            assert False, "year rollover not applied"
+
+    def test_invalid_line(self):
+        """パースできない行は None を返す"""
+        assert _syslog_line_dt("") is None
+        assert _syslog_line_dt("not a syslog line") is None
+        assert _syslog_line_dt("Jan XX 10:00:00 host msg") is None
+
+
+# --- _check_host_health ---
+
+
+class TestCheckHostHealth:
+    def _make_dev(self, system_alarms="No alarms currently active",
+                  chassis_alarms="No alarms currently active",
+                  interfaces="ge-0/0/0          up    up",
+                  syslog=""):
+        dev = MagicMock()
+        dev.cli.side_effect = lambda cmd, **kw: {
+            "show system alarms": system_alarms,
+            "show chassis alarms": chassis_alarms,
+            "show interfaces terse": interfaces,
+            "show log messages | last 200": syslog,
+        }[cmd]
+        return dev
+
+    def test_all_clean(self):
+        """正常なデバイスは anomalies が空"""
+        dev = self._make_dev()
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert result["hostname"] == "rt1.example.jp"
+        assert result["anomalies"] == []
+        assert result["error"] is None
+
+    def test_system_alarm(self):
+        """system alarms に内容があれば [ALARM] タグで anomaly を追加する"""
+        dev = self._make_dev(system_alarms="1 alarms currently active\nAlarm time   Class  Description\nMay 25 09:00:00  Minor  FPC 0 DRAM Error")
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert any("[ALARM]" in a for a in result["anomalies"])
+
+    def test_interface_down(self):
+        """up/down インターフェースを [IF_DOWN] として検出する"""
+        iface_out = "ge-0/0/0          up    up\nge-0/0/1          up    down\n"
+        dev = self._make_dev(interfaces=iface_out)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert any("[IF_DOWN] ge-0/0/1" in a for a in result["anomalies"])
+
+    def test_loopback_excluded(self):
+        """lo0 down は [IF_DOWN] に含めない"""
+        iface_out = "lo0               up    down\n"
+        dev = self._make_dev(interfaces=iface_out)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("[IF_DOWN]" in a for a in result["anomalies"])
+
+    def test_syslog_in_window(self):
+        """since_hours 以内の alert パターンを [SYSLOG] として検出する"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        ts = now.strftime("%b %d %H:%M:%S").replace("  ", " ")
+        line = f"{ts} rt1 RPD_BGP_NEIGHBOR_STATE_CHANGED: EBGP peer 10.0.0.1 (AS 65001) Established->Active"
+        dev = self._make_dev(syslog=line)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert any("[SYSLOG]" in a for a in result["anomalies"])
+
+    def test_syslog_outside_window(self):
+        """since_hours より古いログは無視する"""
+        line = "Jan  1 00:00:00 rt1 RPD_BGP_NEIGHBOR_STATE_CHANGED: Established->Active"
+        dev = self._make_dev(syslog=line)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=1)
+        assert not any("[SYSLOG]" in a for a in result["anomalies"])
+
+
+# --- daily_brief ---
+
+
+class TestDailyBrief:
+    @patch("junos_mcp.server.common.run_parallel")
+    def test_all_ok(self, mock_parallel, mock_config):
+        """全ホスト正常なら OK カウントが正しい"""
+        mock_parallel.return_value = {
+            "rt1.example.jp": {"hostname": "rt1.example.jp", "anomalies": [], "error": None}
+        }
+        result = daily_brief(hostnames=["rt1.example.jp"])
+        assert "1 OK" in result
+        assert "0 WARNING" in result
+        assert "0 CRITICAL" in result
+
+    @patch("junos_mcp.server.common.run_parallel")
+    def test_warning_host(self, mock_parallel, mock_config):
+        """anomaly があるホストは WARNING に分類される"""
+        mock_parallel.return_value = {
+            "rt1.example.jp": {
+                "hostname": "rt1.example.jp",
+                "anomalies": ["[IF_DOWN] ge-0/0/0"],
+                "error": None,
+            }
+        }
+        result = daily_brief(hostnames=["rt1.example.jp"])
+        assert "1 WARNING" in result
+        assert "ge-0/0/0" in result
+
+    @patch("junos_mcp.server.common.run_parallel")
+    def test_critical_host(self, mock_parallel, mock_config):
+        """接続失敗は CRITICAL に分類される"""
+        mock_parallel.return_value = {
+            "rt1.example.jp": {
+                "hostname": "rt1.example.jp",
+                "anomalies": ["[UNREACHABLE] timeout"],
+                "error": "timeout",
+            }
+        }
+        result = daily_brief(hostnames=["rt1.example.jp"])
+        assert "1 CRITICAL" in result
+        assert "timeout" in result
+
+    @patch("junos_mcp.server.common.run_parallel")
+    def test_missing_result(self, mock_parallel, mock_config):
+        """run_parallel が結果を返さなかったホストは CRITICAL"""
+        mock_parallel.return_value = {}
+        result = daily_brief(hostnames=["rt1.example.jp"])
+        assert "1 CRITICAL" in result
+
+    def test_unknown_hostname(self, mock_config):
+        """config.ini に存在しないホスト名はエラー"""
+        result = daily_brief(hostnames=["unknown.example.jp"])
+        assert "Error" in result
