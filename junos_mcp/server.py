@@ -28,6 +28,7 @@ from jnpr.junos.utils.config import Config
 from junos_ops import common
 from junos_ops import display
 from junos_ops import rsi
+from junos_ops import show
 from junos_ops import upgrade
 
 from junos_mcp.pool import PoolConnectionError, get_pool
@@ -69,6 +70,8 @@ def _init_globals(config_path: str = "") -> str | None:
         health_check=None,
         no_health_check=False,
         no_confirm=False,
+        no_commit=False,
+        unlink=False,
         show_command=None,
         showfile=None,
         retry=0,
@@ -180,42 +183,53 @@ def get_version(hostname: str, config_path: str = "") -> str:
 
 
 @mcp.tool()
-def run_show_command(hostname: str, command: str, config_path: str = "") -> str:
+def run_show_command(
+    hostname: str,
+    command: str,
+    output_format: str = "text",
+    config_path: str = "",
+) -> str:
     """Run a CLI show command on the device and return output.
 
     Args:
         hostname: Target device hostname (must exist in config.ini)
         command: CLI command to execute (e.g., "show bgp summary")
+        output_format: Output format — "text" (default), "json", or "xml".
+            Note: JunOS drops pipe stages (| match, | last, | count) under
+            json/xml; use "text" when pipe filtering is needed.
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
-        try:
-            output = dev.cli(command)
-            return f"# {hostname}\n## {command}\n{output.strip()}"
-        except Exception as e:
-            return f"# {hostname}\nError running '{command}': {e}"
+        result = show.run_cli(dev, command, output_format=output_format, hostname=hostname)
+        return display.format_show(result)
 
     return _connect_and_run(hostname, config_path, _operation)
 
 
 @mcp.tool()
-def run_show_commands(hostname: str, commands: list[str], config_path: str = "") -> str:
+def run_show_commands(
+    hostname: str,
+    commands: list[str],
+    output_format: str = "text",
+    config_path: str = "",
+) -> str:
     """Run multiple CLI show commands on the device in a single session.
+
+    Commands are executed in sequence and stop on the first failure.
+    To run all commands regardless of individual errors, call
+    run_show_command once per command instead.
 
     Args:
         hostname: Target device hostname (must exist in config.ini)
         commands: List of CLI commands to execute
+        output_format: Output format — "text" (default), "json", or "xml".
+            Note: JunOS drops pipe stages (| match, | last, | count) under
+            json/xml; use "text" when pipe filtering is needed.
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
-        lines = []
-        for cmd in commands:
-            try:
-                output = dev.cli(cmd)
-                lines.append(f"## {cmd}\n{output.strip()}")
-            except Exception as e:
-                lines.append(f"## {cmd}\nError: {e}")
-        return f"# {hostname}\n" + "\n\n".join(lines)
+        result = show.run_cli_batch(dev, commands, output_format=output_format, hostname=hostname)
+        return display.format_show(result)
 
     return _connect_and_run(hostname, config_path, _operation)
 
@@ -297,7 +311,7 @@ def run_show_command_batch(
         return targets
 
     def _run_one(hostname):
-        output = run_show_command(hostname, command, config_path)
+        output = run_show_command(hostname, command, config_path=config_path)
         if compiled is None:
             return output
         # 接続エラーやコマンドエラーはヘッダーなし — フィルタせずそのまま返す
@@ -704,6 +718,11 @@ def _check_one_host(hostname: str, do_connect: bool, do_remote: bool, explicit_m
                     "file": None,
                     "cached": False,
                 }
+
+        try:
+            row["disk"] = upgrade.get_disk_avail(hostname, dev)
+        except Exception:
+            row["disk"] = None
     finally:
         try:
             dev.close()
@@ -746,7 +765,7 @@ def check_reachability(
 
     results = common.run_parallel(_run_one, targets, max_workers=max_workers)
     rows = [results[h] for h in targets if h in results]
-    return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=False)
+    return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=False, show_disk=True)
 
 
 @mcp.tool()
@@ -838,7 +857,7 @@ def check_remote_packages(
 
     results = common.run_parallel(_run_one, targets, max_workers=max_workers)
     rows = [results[h] for h in targets if h in results]
-    return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=True)
+    return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=True, show_disk=True)
 
 
 @mcp.tool()
@@ -848,6 +867,7 @@ def push_config(
     set_commands: list[str] | None = None,
     dry_run: bool = True,
     confirm_timeout: int = 1,
+    no_commit: bool = False,
     health_check: list[str] | None = None,
     config_path: str = "",
 ) -> str:
@@ -862,9 +882,14 @@ def push_config(
     - commit confirmed: auto-rollback if not confirmed within timeout
     - health check: auto-rollback on connectivity failure after commit
 
-    Commit flow:
+    Commit flow (normal):
         lock -> load -> diff -> commit_check -> commit confirmed ->
         health check -> confirm -> unlock
+
+    Commit flow (no_commit=True — intentional auto-rollback):
+        lock -> load -> diff -> commit_check -> commit confirmed -> unlock
+        (health check and final confirm are skipped; JUNOS rolls back
+        automatically after confirm_timeout minutes)
 
     Args:
         hostname: Target device hostname (must exist in config.ini)
@@ -872,12 +897,18 @@ def push_config(
         set_commands: List of set commands (mutually exclusive with config_file)
         dry_run: If True (default), show diff only without committing
         confirm_timeout: Minutes before auto-rollback (default 1, used with commit confirmed)
+        no_commit: If True, issue commit confirmed but intentionally skip the final
+            commit so JUNOS auto-rolls back after confirm_timeout minutes. Useful
+            for triggering service restarts (e.g. syslog on EX3400) where no
+            ``request ...restart`` command exists. dry_run=True takes precedence
+            over no_commit (diff is shown but nothing is committed).
         health_check: Fallback health check commands tried in order after commit.
             Passes if ANY command succeeds. Supports "ping ..." (checks packets received),
             "uptime" (NETCONF RPC probe), or any CLI command (success if no exception).
             Default: ["uptime"] — uses the existing NETCONF session and does not
             depend on ICMP reachability. (Changed from broadcast ping in junos-mcp
             0.11.0 to match junos-ops 0.16.8+.)
+            Ignored when no_commit=True.
         config_path: Path to config.ini (empty string uses default search)
     """
     # 入力バリデーション
@@ -929,6 +960,17 @@ def push_config(
 
             # validation
             cu.commit_check()
+
+            if no_commit:
+                # 意図的な自動ロールバック — ヘルスチェック・確定なし
+                cu.commit(confirm=confirm_timeout)
+                cu.unlock()
+                return (
+                    f"# {hostname}\n{rendered}## Config diff\n{diff}\n"
+                    f"## Result\nCommit confirmed {confirm_timeout} min applied"
+                    f" — intentional auto-rollback (no_commit=True).\n"
+                    f"DO NOT run commit confirm manually."
+                )
 
             # commit confirmed（自動ロールバック付き）
             cu.commit(confirm=confirm_timeout)
@@ -1007,7 +1049,13 @@ def copy_package(hostname: str, dry_run: bool = True, force: bool = False, confi
 
 
 @mcp.tool()
-def install_package(hostname: str, dry_run: bool = True, force: bool = False, config_path: str = "") -> str:
+def install_package(
+    hostname: str,
+    dry_run: bool = True,
+    force: bool = False,
+    unlink: bool = False,
+    config_path: str = "",
+) -> str:
     """Install firmware package on device with pre-flight checks.
 
     Full upgrade flow: version check -> rollback pending if needed ->
@@ -1018,11 +1066,18 @@ def install_package(hostname: str, dry_run: bool = True, force: bool = False, co
         hostname: Target device hostname (must exist in config.ini)
         dry_run: If True (default), show what would be done without installing
         force: If True, skip version checks and force install
+        unlink: If True, run ``request system software add <pkg> unlink``
+            via CLI instead of PyEZ SW.install(). Use for low-flash devices
+            (EX2300 / EX3400, ~1.3 GB /dev/gpt/junos) where major version
+            upgrades fail with "ERROR: insufficient space" because PyEZ does
+            not expose the unlink parameter. The CLI path frees ~330 MB by
+            unlinking the source tgz during extraction.
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
         common.args.dry_run = dry_run
         common.args.force = force
+        common.args.unlink = unlink
         # install() branches on ``subcommand`` to decide whether to
         # skip the pre-install remote package check (upgrade) or
         # fail-fast when the remote package is missing (install-only).

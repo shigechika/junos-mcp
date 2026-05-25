@@ -25,8 +25,8 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 
 | Tool | Description | Connection |
 |------|-------------|:----------:|
-| `run_show_command` | Run a single CLI show command | Yes |
-| `run_show_commands` | Run multiple CLI commands in a single session | Yes |
+| `run_show_command` | Run a single CLI show command (`output_format`: text/json/xml) | Yes |
+| `run_show_commands` | Run multiple CLI commands in a single session (`output_format`: text/json/xml) | Yes |
 | `run_show_command_batch` | Run a command on multiple devices in parallel (supports tag filter and `grep_pattern`) | Yes |
 
 ### Configuration Management
@@ -46,7 +46,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | `get_package_info` | Get model-specific package file and hash | No |
 | `list_remote_files` | List files on remote device path | Yes |
 | `copy_package` | Copy firmware package via SCP with checksum | Yes |
-| `install_package` | Install firmware with pre-flight checks | Yes |
+| `install_package` | Install firmware with pre-flight checks (`unlink` flag for EX2300/EX3400) | Yes |
 | `rollback_package` | Rollback to previous package version | Yes |
 | `schedule_reboot` | Schedule device reboot at specified time | Yes |
 
@@ -64,9 +64,9 @@ junos-ops display layer for table rendering.
 
 | Tool | Description | Connection |
 |------|-------------|:----------:|
-| `check_reachability` | Probe NETCONF reachability per host (fast: no facts, 5s TCP probe) | Yes |
+| `check_reachability` | Probe NETCONF reachability + available disk space per host (fast: no facts, 5s TCP probe) | Yes |
 | `check_local_inventory` | Verify local firmware checksums against config.ini inventory | No |
-| `check_remote_packages` | Verify staged firmware checksum on devices (post-SCP verification) | Yes |
+| `check_remote_packages` | Verify staged firmware checksum + available disk space on devices (post-SCP verification) | Yes |
 
 ### Safety by Design
 
@@ -79,6 +79,9 @@ The AI assistant must explicitly set `dry_run=False` to make changes.
 - **commit confirmed** with configurable timeout (auto-rollback if not confirmed)
 - **Fallback health check** after commit (ping, NETCONF uptime probe, or any CLI command)
 - **Automatic rollback** if health check fails (commit is not confirmed, timer expires)
+- **`no_commit=True`** — issues `commit confirmed` but intentionally skips the final commit.
+  JUNOS auto-rolls back after `confirm_timeout` minutes. Useful for restarting services that
+  lack a `request ...restart` command (e.g. syslog daemon on EX3400 post-upgrade).
 
 ## Requirements
 
@@ -147,6 +150,24 @@ run_show_command_batch(
 ```
 
 See the [junos-ops tag documentation](https://github.com/shigechika/junos-ops#tag-based-host-filtering) for how to tag sections in `config.ini` and for the matching CLI grammar.
+
+## Structured output format
+
+`run_show_command` and `run_show_commands` accept an optional `output_format` parameter:
+
+| Value | Description |
+|-------|-------------|
+| `"text"` | Default. Plain-text CLI output (same as typing the command) |
+| `"json"` | NETCONF JSON output — device returns a structured dict |
+| `"xml"` | NETCONF XML output — device returns pretty-printed XML |
+
+**Note:** JunOS drops CLI pipe stages (`| match`, `| last`, `| count`) under json/xml output.
+Use `"text"` when pipe filtering is needed.
+
+```python
+# Get structured BGP summary data
+run_show_command("router-a", "show bgp summary", output_format="json")
+```
 
 ## Server-side output filtering
 
