@@ -1357,15 +1357,21 @@ class TestSyslogLineDt:
     def test_year_rollover(self):
         """未来の日付は前年として扱う（年末ロールオーバー）"""
         import datetime as _dt
-        # 12月31日のログが 1月1日に処理される場合を模擬
-        # 未来1時間超 → 前年
-        line = "Dec 31 23:59:59 rt1 %DAEMON: msg"
-        result = _syslog_line_dt(line)
+        from unittest.mock import patch
+        # 2026年1月1日 00:30:00 に「now」を固定して実行
+        fake_now = _dt.datetime(2026, 1, 1, 0, 30, 0)
+        with patch("junos_mcp.server.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value = fake_now
+            mock_dt.datetime.strptime.side_effect = _dt.datetime.strptime
+            mock_dt.datetime.side_effect = _dt.datetime
+            mock_dt.timedelta.side_effect = _dt.timedelta
+            # Dec 31 23:59:59 は fake_now より 25 分前 → 当年(2025)
+            line = "Dec 31 23:59:59 rt1 %DAEMON: msg"
+            result = _syslog_line_dt(line)
         assert result is not None
-        now = _dt.datetime.now()
-        # 未来の場合は前年になるはず（テスト実行タイミング依存だが大半OK）
-        if result > now + _dt.timedelta(hours=1):
-            assert False, "year rollover not applied"
+        assert result.year == 2025
+        assert result.month == 12
+        assert result.day == 31
 
     def test_invalid_line(self):
         """パースできない行は None を返す"""
@@ -1435,6 +1441,22 @@ class TestCheckHostHealth:
         dev = self._make_dev(syslog=line)
         result = _check_host_health("rt1.example.jp", dev, since_hours=1)
         assert not any("[SYSLOG]" in a for a in result["anomalies"])
+
+    def test_syslog_truncated_at_max(self):
+        """SYSLOG マッチが _SYSLOG_MAX_MATCHES を超えたら truncated メッセージを追加する"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        ts = now.strftime("%b %d %H:%M:%S").replace("  ", " ")
+        lines = "\n".join(
+            f"{ts} rt1 IF_DOWN: interface ge-0/0/{i} down"
+            for i in range(12)  # 12 行 > _SYSLOG_MAX_MATCHES(10)
+        )
+        dev = self._make_dev(syslog=lines)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        syslog_entries = [a for a in result["anomalies"] if "[SYSLOG]" in a]
+        # 10件 + truncated メッセージ = 11エントリ
+        assert len(syslog_entries) == 11
+        assert any("truncated" in a for a in syslog_entries)
 
 
 # --- daily_brief ---

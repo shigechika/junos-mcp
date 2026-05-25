@@ -1,8 +1,8 @@
 """MCP server exposing junos-ops device operations.
 
-Provides 22 tools for Juniper Networks device management: device info,
+Provides 23 tools for Juniper Networks device management: device info,
 CLI execution, config management, firmware upgrade, RSI/SCF collection,
-and pre-flight checks.
+pre-flight checks, and daily operations.
 
 Supports STDIO and Streamable HTTP transports.
 

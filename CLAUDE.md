@@ -29,7 +29,7 @@ junos_mcp/
 tests/
 ├── __init__.py
 ├── test_pool.py                # 14 ユニットテスト（ConnectionPool）
-├── test_server.py              # 98 ユニットテスト
+├── test_server.py              # 99 ユニットテスト
 └── test_version_consistency.py # バージョン整合性テスト
 pyproject.toml          # パッケージメタデータ、依存関係
 LICENSE                 # Apache License 2.0
@@ -128,7 +128,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-114 テスト（グローバル初期化、config パス解決、接続プール、23 ツールの動作検証、バージョン整合性）。
+115 テスト（グローバル初期化、config パス解決、接続プール、23 ツールの動作検証、バージョン整合性）。
 
 ## バージョン管理
 
