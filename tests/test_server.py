@@ -1335,9 +1335,7 @@ class TestScheduleReboot:
 class TestSyslogLineDt:
     def test_valid_line(self):
         """正常なタイムスタンプをパースできる"""
-        import datetime as _dt
-        now = _dt.datetime.now()
-        line = f"Jan 15 10:30:00 rt1 %DAEMON-3: something happened"
+        line = "Jan 15 10:30:00 rt1 %DAEMON-3: something happened"
         result = _syslog_line_dt(line)
         assert result is not None
         assert result.month == 1
