@@ -215,6 +215,10 @@ def run_show_commands(
 ) -> str:
     """Run multiple CLI show commands on the device in a single session.
 
+    Commands are executed in sequence and stop on the first failure.
+    To run all commands regardless of individual errors, call
+    run_show_command once per command instead.
+
     Args:
         hostname: Target device hostname (must exist in config.ini)
         commands: List of CLI commands to execute
@@ -715,7 +719,10 @@ def _check_one_host(hostname: str, do_connect: bool, do_remote: bool, explicit_m
                     "cached": False,
                 }
 
-        row["disk"] = upgrade.get_disk_avail(hostname, dev)
+        try:
+            row["disk"] = upgrade.get_disk_avail(hostname, dev)
+        except Exception:
+            row["disk"] = None
     finally:
         try:
             dev.close()
@@ -893,7 +900,8 @@ def push_config(
         no_commit: If True, issue commit confirmed but intentionally skip the final
             commit so JUNOS auto-rolls back after confirm_timeout minutes. Useful
             for triggering service restarts (e.g. syslog on EX3400) where no
-            ``request ...restart`` command exists. Mutually exclusive with dry_run.
+            ``request ...restart`` command exists. dry_run=True takes precedence
+            over no_commit (diff is shown but nothing is committed).
         health_check: Fallback health check commands tried in order after commit.
             Passes if ANY command succeeds. Supports "ping ..." (checks packets received),
             "uptime" (NETCONF RPC probe), or any CLI command (success if no exception).
