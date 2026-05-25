@@ -1358,14 +1358,15 @@ class TestSyslogLineDt:
         """未来の日付は前年として扱う（年末ロールオーバー）"""
         import datetime as _dt
         from unittest.mock import patch
-        # 2026年1月1日 00:30:00 に「now」を固定して実行
+        # now を 2026-01-01 00:30:00 に固定
+        # "Dec 31" は最初 2026-12-31 23:59:59 として構築される（now.year=2026）
+        # → now+1h(2026-01-01 01:30:00) より大幅に未来 → 前年 2025 に修正される
         fake_now = _dt.datetime(2026, 1, 1, 0, 30, 0)
         with patch("junos_mcp.server.datetime") as mock_dt:
             mock_dt.datetime.now.return_value = fake_now
             mock_dt.datetime.strptime.side_effect = _dt.datetime.strptime
             mock_dt.datetime.side_effect = _dt.datetime
             mock_dt.timedelta.side_effect = _dt.timedelta
-            # Dec 31 23:59:59 は fake_now より 25 分前 → 当年(2025)
             line = "Dec 31 23:59:59 rt1 %DAEMON: msg"
             result = _syslog_line_dt(line)
         assert result is not None
