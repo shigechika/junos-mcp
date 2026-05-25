@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `install_package`: new `unlink` flag (`unlink=True`). Dispatches to
+  `upgrade._install_via_cli_with_unlink()` which runs
+  `request system software add <pkg> unlink` directly via CLI, bypassing
+  PyEZ `SW.install()`. Use on low-flash devices (EX2300 / EX3400,
+  ≈1.3 GB `/dev/gpt/junos`) where major version upgrades fail with
+  *"ERROR: insufficient space"* because PyEZ does not expose the `unlink`
+  parameter. Requires junos-ops ≥ 0.23.0.
+- `push_config`: new `no_commit` flag (`no_commit=True`). Issues
+  `commit confirmed` but intentionally skips the final commit so
+  JUNOS auto-rolls back after `confirm_timeout` minutes. Health check
+  is skipped. Useful for triggering service restarts that lack a
+  `request ...restart` command (e.g. syslog daemon on EX3400 post-upgrade).
+  Requires junos-ops ≥ 0.22.2.
+- `check_reachability` / `check_remote_packages`: output table now includes
+  an `avail` column showing available disk space on the `rpath` filesystem
+  (MiB/GiB). Hosts below 600 MiB are marked `!`. Calls
+  `upgrade.get_disk_avail()` (`get-system-storage-information` RPC)
+  for each connected host. Requires junos-ops ≥ 0.20.0.
+- `run_show_command` / `run_show_commands`: new `output_format` parameter
+  (`"text"` default / `"json"` / `"xml"`). `json` and `xml` request
+  structured output from the device via NETCONF. Note: JunOS drops CLI
+  pipe stages (`| match`, `| last`, `| count`) under json/xml — use
+  `"text"` when pipe filtering is needed. Implemented via
+  `junos_ops.show.run_cli()` / `run_cli_batch()`. Requires junos-ops ≥ 0.18.0.
+
+### Changed
+- Dependency floor bumped from `>=0.16.9` to `>=0.23.0` to cover all
+  four upstream API additions above.
+
 ## [0.12.0] - 2026-05-01
 
 ### Added

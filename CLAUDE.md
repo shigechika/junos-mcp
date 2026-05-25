@@ -60,14 +60,14 @@ README.ja.md            # 日本語版
 - `get_router_list` — config.ini の全ルータ一覧
 
 #### MCP ツール — CLI コマンド実行（3）
-- `run_show_command` — 単一 CLI コマンド実行（`dev.cli()`）
-- `run_show_commands` — 複数コマンドを1セッションで順次実行
+- `run_show_command` — 単一 CLI コマンド実行（`show.run_cli()`、`output_format` = "text"/"json"/"xml"）
+- `run_show_commands` — 複数コマンドを1セッションで順次実行（`show.run_cli_batch()`、`output_format` 対応）
 - `run_show_command_batch` — 複数デバイスに並列実行（`common.run_parallel()`）
 
 #### MCP ツール — 設定管理（3）
 - `get_config` — デバイス設定取得（text/set/xml、`dev.rpc.get_config()`）
 - `get_config_diff` — rollback バージョンとの差分表示
-- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）
+- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）
 
 #### MCP ツール — アップグレード操作（7）
 - `check_upgrade_readiness` — アップグレード準備状況
@@ -75,7 +75,7 @@ README.ja.md            # 日本語版
 - `get_package_info` — モデル別パッケージ情報（デバイス接続不要）
 - `list_remote_files` — リモートファイル一覧
 - `copy_package` — SCP によるパッケージコピー（チェックサム検証付き）
-- `install_package` — パッケージインストール（プリフライトチェック付き）
+- `install_package` — パッケージインストール（プリフライトチェック付き）。`unlink=True` で低フラッシュデバイス（EX2300/EX3400）向け CLI パス
 - `rollback_package` — パッケージロールバック
 - `schedule_reboot` — リブートスケジュール
 
@@ -84,9 +84,9 @@ README.ja.md            # 日本語版
 - `collect_rsi_batch` — 複数デバイスからの RSI/SCF 並列収集
 
 #### MCP ツール — プリフライトチェック（3）
-- `check_reachability` — NETCONF 到達性のみ高速確認（`junos-ops check --connect` 相当）
+- `check_reachability` — NETCONF 到達性 + ディスク空き容量確認（`junos-ops check --connect` 相当）
 - `check_local_inventory` — config.ini インベントリのローカルチェックサム検証（`--local`、デバイス接続不要）
-- `check_remote_packages` — デバイス側ファームウェアチェックサム検証（`--remote`）
+- `check_remote_packages` — デバイス側ファームウェアチェックサム検証 + ディスク空き容量確認（`--remote`）
 
 #### 共通パラメータ
 - `hostname`: 接続先ホスト名（config.ini に存在する必要あり、必須）
@@ -125,7 +125,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-94 テスト（グローバル初期化、config パス解決、接続プール、22 ツールの動作検証、バージョン整合性）。
+99 テスト（グローバル初期化、config パス解決、接続プール、22 ツールの動作検証、バージョン整合性）。
 
 ## バージョン管理
 

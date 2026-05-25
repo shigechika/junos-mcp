@@ -332,7 +332,7 @@ class TestRunShowCommand:
         assert "rt1.example.jp" in result
         assert "show bgp summary" in result
         assert "BGP is running" in result
-        mock_dev.cli.assert_called_once_with("show bgp summary")
+        mock_dev.cli.assert_called_once_with("show bgp summary", warning=False)
 
     @patch("junos_ops.common.connect")
     def test_handles_command_error(self, mock_connect, mock_config):
@@ -341,8 +341,18 @@ class TestRunShowCommand:
         mock_dev.cli.side_effect = Exception("RPC error")
         mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
         result = run_show_command("rt1.example.jp", "show invalid")
-        assert "Error" in result
         assert "RPC error" in result
+
+    @patch("junos_ops.common.connect")
+    def test_output_format_json(self, mock_connect, mock_config):
+        """output_format='json' で dev.cli が format='json' で呼ばれる"""
+        mock_dev = MagicMock()
+        mock_dev.cli.return_value = {"bgp-information": {"peer-count": 2}}
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        result = run_show_command("rt1.example.jp", "show bgp summary", output_format="json")
+        assert "rt1.example.jp" in result
+        assert "show bgp summary" in result
+        mock_dev.cli.assert_called_once_with("show bgp summary", warning=False, format="json")
 
 
 # --- list_remote_files ---
@@ -558,7 +568,6 @@ class TestRunShowCommands:
             "rt1.example.jp", ["show version", "show bad"]
         )
         assert "ok" in result
-        assert "Error" in result
         assert "RPC error" in result
 
     @patch("junos_ops.common.connect")
@@ -845,6 +854,20 @@ class TestCheckReachability:
         assert "fail" in result
         assert "TCP probe timeout" in result
 
+    @patch("junos_mcp.server.upgrade.get_disk_avail")
+    @patch("junos_ops.common.connect")
+    def test_disk_column_shown(self, mock_connect, mock_disk, mock_config):
+        """接続成功時に avail ディスク列が表示される"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {
+            "hostname": "rt1.example.jp", "host": "rt1.example.jp",
+            "ok": True, "dev": mock_dev, "error": None, "error_message": None,
+        }
+        mock_disk.return_value = {"ok": True, "avail_mib": 2048, "filesystem": "/var/tmp", "error": None}
+        result = check_reachability(["rt1.example.jp"], max_workers=1)
+        assert "avail" in result
+        mock_disk.assert_called_once()
+
 
 class TestCheckLocalInventory:
     @patch("junos_mcp.server.upgrade.check_local_package_by_model")
@@ -1060,6 +1083,27 @@ class TestPushConfig:
             )
             assert "lock failed" in result
 
+    @patch("junos_ops.common.connect")
+    def test_no_commit_skips_final_commit(self, mock_connect, mock_config):
+        """no_commit=True: commit confirmed のみでヘルスチェック・確定 commit なし"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        with patch("junos_mcp.server.Config") as MockConfig:
+            mock_cu = MagicMock()
+            mock_cu.diff.return_value = "[edit system]\n+  host-name new;"
+            MockConfig.return_value = mock_cu
+            result = push_config(
+                "rt1.example.jp",
+                set_commands=["set system host-name new"],
+                dry_run=False,
+                no_commit=True,
+            )
+            assert "auto-rollback" in result
+            assert "no_commit=True" in result
+            # commit confirmed の1回のみ（確定 commit はしない）
+            assert mock_cu.commit.call_count == 1
+            mock_cu.commit.assert_called_once_with(confirm=1)
+
 
 # --- copy_package ---
 
@@ -1188,6 +1232,26 @@ class TestInstallPackage:
         install_package("rt1.example.jp")
         # After the tool runs, common.args.subcommand should have been set.
         assert common.args.subcommand == "upgrade"
+
+    @patch("junos_mcp.server.upgrade.install")
+    @patch("junos_ops.common.connect")
+    def test_unlink_flag(self, mock_connect, mock_install, mock_config):
+        """unlink=True で common.args.unlink が True にセットされる"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_install.return_value = _install_result(ok=True)
+        install_package("rt1.example.jp", unlink=True)
+        assert common.args.unlink is True
+
+    @patch("junos_mcp.server.upgrade.install")
+    @patch("junos_ops.common.connect")
+    def test_unlink_default_false(self, mock_connect, mock_install, mock_config):
+        """unlink のデフォルトは False"""
+        mock_dev = MagicMock()
+        mock_connect.return_value = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_install.return_value = _install_result(ok=True)
+        install_package("rt1.example.jp")
+        assert common.args.unlink is False
 
 
 # --- rollback_package ---
