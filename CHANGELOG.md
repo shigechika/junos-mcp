@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `daily_brief`: new MCP tool for morning health checks across multiple
+  devices in parallel (closes [#10](https://github.com/shigechika/junos-mcp/issues/10)).
+  Runs four checks per host — system/chassis alarms, interfaces up/down
+  (loopback excluded), and syslog alert-pattern matching within a
+  configurable look-back window (`since_hours`, default 18 h).
+  Watched syslog patterns: `RPD_BGP_NEIGHBOR_STATE_CHANGED` (away from
+  Established), `ESWD_STP_PORT_ROLE_CHANGE`, `OSPF.*neighbor.*down`,
+  `KERN_ARP_ADDR_CHANGE`, `IF_DOWN`.
+  Output is a three-tier Markdown summary: CRITICAL (connection failure),
+  WARNING (anomalies found), OK (clean).
+  Accepts the same `hostnames` / `tags` / `max_workers` / `config_path`
+  arguments as `run_show_command_batch`.
+
 ## [0.13.0] - 2026-05-25
 
 ### Added

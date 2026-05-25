@@ -25,11 +25,11 @@ junos_mcp/
 ├── __init__.py         # パッケージ定義、__version__
 ├── __main__.py         # python -m junos_mcp 対応
 ├── pool.py             # per-host NETCONF 接続プール（ConnectionPool、get_pool）
-└── server.py           # FastMCP サーバー定義、22ツール実装
+└── server.py           # FastMCP サーバー定義、23ツール実装
 tests/
 ├── __init__.py
 ├── test_pool.py                # 14 ユニットテスト（ConnectionPool）
-├── test_server.py              # 78 ユニットテスト
+├── test_server.py              # 99 ユニットテスト
 └── test_version_consistency.py # バージョン整合性テスト
 pyproject.toml          # パッケージメタデータ、依存関係
 LICENSE                 # Apache License 2.0
@@ -88,6 +88,9 @@ README.ja.md            # 日本語版
 - `check_local_inventory` — config.ini インベントリのローカルチェックサム検証（`--local`、デバイス接続不要）
 - `check_remote_packages` — デバイス側ファームウェアチェックサム検証 + ディスク空き容量確認（`--remote`）
 
+#### MCP ツール — 日次オペレーション（1）
+- `daily_brief` — 複数デバイスの朝次ヘルスチェックを並列実行。`_check_host_health()` で 4 チェック（system/chassis alarms、interface down、syslog アラートパターン）を実行し CRITICAL/WARNING/OK の 3 段階 Markdown サマリーを返す。`since_hours`（デフォルト 18 h）で syslog のルックバック窓を指定
+
 #### 共通パラメータ
 - `hostname`: 接続先ホスト名（config.ini に存在する必要あり、必須）
 - `config_path`: config.ini のパス（省略時は環境変数 or デフォルト探索）
@@ -125,7 +128,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-99 テスト（グローバル初期化、config パス解決、接続プール、22 ツールの動作検証、バージョン整合性）。
+115 テスト（グローバル初期化、config パス解決、接続プール、23 ツールの動作検証、バージョン整合性）。
 
 ## バージョン管理
 

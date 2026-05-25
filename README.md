@@ -68,6 +68,12 @@ junos-ops display layer for table rendering.
 | `check_local_inventory` | Verify local firmware checksums against config.ini inventory | No |
 | `check_remote_packages` | Verify staged firmware checksum + available disk space on devices (post-SCP verification) | Yes |
 
+### Daily Operations
+
+| Tool | Description | Connection |
+|------|-------------|:----------:|
+| `daily_brief` | Morning health check across multiple devices in parallel — alarms, interface up/down, and syslog alert patterns within a look-back window (`since_hours`, default 18 h). Returns a CRITICAL/WARNING/OK Markdown summary. | Yes |
+
 ### Safety by Design
 
 All destructive operations (`push_config`, `copy_package`, `install_package`,
@@ -300,7 +306,7 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-94 tests covering all 22 tools, the connection pool, helper functions, and edge cases.
+115 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
 
 ## Architecture
 
