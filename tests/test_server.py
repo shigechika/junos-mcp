@@ -1424,6 +1424,24 @@ class TestCheckHostHealth:
         result = _check_host_health("rt1.example.jp", dev, since_hours=18)
         assert not any("[IF_DOWN]" in a for a in result["anomalies"])
 
+    def test_mgmt_and_internal_units_excluded(self):
+        """管理系(fxp/me/vme/em)と内部論理ユニット(.16386/.32767/.32768)は [IF_DOWN] から除外する"""
+        iface_out = (
+            "fxp0              up    down\n"
+            "me0               up    down\n"
+            "me0.0             up    down\n"
+            "vme               up    down\n"
+            "em0               up    down\n"
+            "ge-0/0/1.16386    up    down\n"
+            "ge-0/0/0.32767    up    down\n"
+            "ge-0/0/0.32768    up    down\n"
+            "ge-0/0/2          up    down\n"
+        )
+        dev = self._make_dev(interfaces=iface_out)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        downs = [a for a in result["anomalies"] if "[IF_DOWN]" in a]
+        assert downs == ["[IF_DOWN] ge-0/0/2"]
+
     def test_syslog_in_window(self):
         """since_hours 以内の alert パターンを [SYSLOG] として検出する"""
         import datetime as _dt

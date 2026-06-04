@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `daily_brief`: exclude management interfaces (`fxp`/`me`/`vme`/`em`) and
+  internal logical units (`.16386`, `.32767`/`.32768`) from `IF_DOWN`
+  reporting, in addition to loopback. These are cosmetically "up down" and
+  were burying real anomalies on large fleets. Physical VC ports
+  (`sxe`/`vcp`) are intentionally still reported. Closes
+  [#13](https://github.com/shigechika/junos-mcp/issues/13).
+
 ## [0.14.0] - 2026-05-25
 
 ### Added

@@ -43,6 +43,13 @@ _SYSLOG_ALERT_RE = re.compile(
     re.IGNORECASE,
 )
 _IF_DOWN_RE = re.compile(r"^(\S+)\s+up\s+down", re.MULTILINE)
+# Interfaces excluded from IF_DOWN reporting: loopback, management
+# (fxp/me/vme/em), and internal logical units (.16386 internal IFL,
+# .32767/.32768 virtual-chassis/internal) that are cosmetically "up down".
+# Physical VC ports (sxe/vcp) are intentionally NOT skipped: a down VC member
+# link can be a genuine fault.
+_IF_DOWN_SKIP_PREFIX = ("lo", "fxp", "me", "vme", "em")
+_IF_DOWN_SKIP_SUFFIX = (".16386", ".32767", ".32768")
 _SYSLOG_MAX_MATCHES = 10
 
 mcp = FastMCP("junos-mcp")
@@ -1253,7 +1260,8 @@ def _check_host_health(hostname: str, dev, since_hours: int) -> dict:
         down_ifs = [
             m.group(1)
             for m in _IF_DOWN_RE.finditer(out)
-            if not m.group(1).startswith("lo")
+            if not m.group(1).startswith(_IF_DOWN_SKIP_PREFIX)
+            and not m.group(1).endswith(_IF_DOWN_SKIP_SUFFIX)
         ]
         for iface in down_ifs:
             anomalies.append(f"[IF_DOWN] {iface}")
