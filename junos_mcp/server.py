@@ -46,6 +46,8 @@ _IF_DOWN_RE = re.compile(r"^(\S+)\s+up\s+down", re.MULTILINE)
 # Interfaces excluded from IF_DOWN reporting: loopback, management
 # (fxp/me/vme/em), and internal logical units (.16386 internal IFL,
 # .32767/.32768 virtual-chassis/internal) that are cosmetically "up down".
+# Physical VC ports (sxe/vcp) are intentionally NOT skipped: a down VC member
+# link can be a genuine fault.
 _IF_DOWN_SKIP_PREFIX = ("lo", "fxp", "me", "vme", "em")
 _IF_DOWN_SKIP_SUFFIX = (".16386", ".32767", ".32768")
 _SYSLOG_MAX_MATCHES = 10
