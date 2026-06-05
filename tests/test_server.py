@@ -1385,16 +1385,39 @@ class TestSyslogLineDt:
 class TestCheckHostHealth:
     def _make_dev(self, system_alarms="No alarms currently active",
                   chassis_alarms="No alarms currently active",
-                  interfaces="ge-0/0/0          up    up",
+                  descriptions="",
+                  flapped=None,
                   syslog=""):
         dev = MagicMock()
-        dev.cli.side_effect = lambda cmd, **kw: {
-            "show system alarms": system_alarms,
-            "show chassis alarms": chassis_alarms,
-            "show interfaces terse": interfaces,
-            "show log messages | last 200": syslog,
-        }[cmd]
+        flaps = flapped or {}
+
+        def _cli(cmd, **kw):
+            if cmd == "show system alarms":
+                return system_alarms
+            if cmd == "show chassis alarms":
+                return chassis_alarms
+            if cmd == "show interfaces descriptions":
+                return descriptions
+            if cmd == "show log messages | last 200":
+                return syslog
+            if cmd.startswith("show interfaces "):
+                iface = cmd.split()[2]
+                ts = flaps.get(iface)
+                head = f"Physical interface: {iface}, Enabled, Physical link is Down\n"
+                if ts is None:
+                    return head
+                return head + f"  Last flapped   : {ts} JST (1w0d 00:00 ago)\n"
+            raise KeyError(cmd)
+
+        dev.cli.side_effect = _cli
         return dev
+
+    @staticmethod
+    def _recent_ts():
+        import datetime as _dt
+        return (_dt.datetime.now() - _dt.timedelta(hours=2)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
 
     def test_all_clean(self):
         """正常なデバイスは anomalies が空"""
@@ -1410,37 +1433,81 @@ class TestCheckHostHealth:
         result = _check_host_health("rt1.example.jp", dev, since_hours=18)
         assert any("[ALARM]" in a for a in result["anomalies"])
 
-    def test_interface_down(self):
-        """up/down インターフェースを [IF_DOWN] として検出する"""
-        iface_out = "ge-0/0/0          up    up\nge-0/0/1          up    down\n"
-        dev = self._make_dev(interfaces=iface_out)
+    def test_described_recent_down_reported(self):
+        """description 付き・admin up・link down で直近 flap のポートを検出する"""
+        desc = (
+            "Interface       Admin Link Description\n"
+            "ge-0/0/1        up    down To_uplink\n"
+        )
+        dev = self._make_dev(
+            descriptions=desc, flapped={"ge-0/0/1": self._recent_ts()}
+        )
         result = _check_host_health("rt1.example.jp", dev, since_hours=18)
         assert any("[IF_DOWN] ge-0/0/1" in a for a in result["anomalies"])
 
-    def test_loopback_excluded(self):
-        """lo0 down は [IF_DOWN] に含めない"""
-        iface_out = "lo0               up    down\n"
-        dev = self._make_dev(interfaces=iface_out)
+    def test_undescribed_port_not_reported(self):
+        """description が無いポートは descriptions に現れず [IF_DOWN] にならない"""
+        desc = (
+            "Interface       Admin Link Description\n"
+            "ge-0/0/2        up    up   To_core\n"
+        )
+        dev = self._make_dev(descriptions=desc)
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("[IF_DOWN]" in a for a in result["anomalies"])
+
+    def test_chronic_down_suppressed(self):
+        """description 付きでも flap が since_hours より古ければ抑止する"""
+        desc = (
+            "Interface       Admin Link Description\n"
+            "xe-0/1/1        up    down To_old\n"
+        )
+        dev = self._make_dev(
+            descriptions=desc, flapped={"xe-0/1/1": "2025-06-20 05:10:25"}
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("[IF_DOWN]" in a for a in result["anomalies"])
+
+    def test_admin_down_excluded(self):
+        """admin down（意図的な無効化）は report しない"""
+        desc = (
+            "Interface       Admin Link Description\n"
+            "ge-0/0/3        down  down To_disabled\n"
+        )
+        dev = self._make_dev(
+            descriptions=desc, flapped={"ge-0/0/3": self._recent_ts()}
+        )
         result = _check_host_health("rt1.example.jp", dev, since_hours=18)
         assert not any("[IF_DOWN]" in a for a in result["anomalies"])
 
     def test_mgmt_and_internal_units_excluded(self):
-        """管理系(fxp/me/vme/em)と内部論理ユニット(.16386/.32767/.32768)は [IF_DOWN] から除外する"""
-        iface_out = (
-            "fxp0              up    down\n"
-            "me0               up    down\n"
-            "me0.0             up    down\n"
-            "vme               up    down\n"
-            "em0               up    down\n"
-            "ge-0/0/1.16386    up    down\n"
-            "ge-0/0/0.32767    up    down\n"
-            "ge-0/0/0.32768    up    down\n"
-            "ge-0/0/2          up    down\n"
+        """管理系(me)と内部論理ユニット(.16386)は description 付き down でも除外する"""
+        desc = (
+            "Interface       Admin Link Description\n"
+            "me0             up    down mgmt\n"
+            "ge-0/0/1.16386  up    down internal\n"
+            "ge-0/0/4        up    down To_real\n"
         )
-        dev = self._make_dev(interfaces=iface_out)
+        dev = self._make_dev(
+            descriptions=desc,
+            flapped={
+                "me0": self._recent_ts(),
+                "ge-0/0/1.16386": self._recent_ts(),
+                "ge-0/0/4": self._recent_ts(),
+            },
+        )
         result = _check_host_health("rt1.example.jp", dev, since_hours=18)
         downs = [a for a in result["anomalies"] if "[IF_DOWN]" in a]
-        assert downs == ["[IF_DOWN] ge-0/0/2"]
+        assert len(downs) == 1 and "ge-0/0/4" in downs[0]
+
+    def test_flap_unknown_reported_conservatively(self):
+        """flap 時刻不明でも link down なら保守的に report する"""
+        desc = (
+            "Interface       Admin Link Description\n"
+            "ge-0/0/5        up    down To_x\n"
+        )
+        dev = self._make_dev(descriptions=desc, flapped={})
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert any("[IF_DOWN] ge-0/0/5" in a for a in result["anomalies"])
 
     def test_syslog_in_window(self):
         """since_hours 以内の alert パターンを [SYSLOG] として検出する"""

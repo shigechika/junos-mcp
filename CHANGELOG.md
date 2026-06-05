@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `daily_brief`: the interface-down check now uses `show interfaces
+  descriptions` instead of `show interfaces terse`. A physical interface is
+  flagged `[IF_DOWN]` only when it has a description (`Admin=up`, `Link=down`)
+  **and** its `Last flapped` time is within `since_hours`. This suppresses two
+  noise classes that survived [#13](https://github.com/shigechika/junos-mcp/issues/13):
+  undescribed unused access ports (no description) and chronically-down ports
+  (down for longer than the window). Real uplinks / inter-switch links carry
+  descriptions, so a genuine recent failure is still caught. Reported lines
+  now include the down-since timestamp. Closes
+  [#15](https://github.com/shigechika/junos-mcp/issues/15).
+
 ### Fixed
 - `daily_brief`: exclude management interfaces (`fxp`/`me`/`vme`/`em`) and
   internal logical units (`.16386`, `.32767`/`.32768`) from `IF_DOWN`
