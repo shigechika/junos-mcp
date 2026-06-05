@@ -42,7 +42,6 @@ _SYSLOG_ALERT_RE = re.compile(
     r"|IF_DOWN",
     re.IGNORECASE,
 )
-_IF_DOWN_RE = re.compile(r"^(\S+)\s+up\s+down", re.MULTILINE)
 # Interfaces excluded from IF_DOWN reporting: loopback, management
 # (fxp/me/vme/em), and internal logical units (.16386 internal IFL,
 # .32767/.32768 virtual-chassis/internal) that are cosmetically "up down".
@@ -50,6 +49,11 @@ _IF_DOWN_RE = re.compile(r"^(\S+)\s+up\s+down", re.MULTILINE)
 # link can be a genuine fault.
 _IF_DOWN_SKIP_PREFIX = ("lo", "fxp", "me", "vme", "em")
 _IF_DOWN_SKIP_SUFFIX = (".16386", ".32767", ".32768")
+# Absolute timestamp in "show interfaces <if>":
+# "Last flapped   : 2026-06-05 14:00:00 JST (1w0d 02:00 ago)"
+_LAST_FLAPPED_RE = re.compile(
+    r"Last flapped\s*:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+)
 _SYSLOG_MAX_MATCHES = 10
 
 mcp = FastMCP("junos-mcp")
@@ -1211,6 +1215,28 @@ def _syslog_line_dt(line: str) -> "datetime.datetime | None":
         return None
 
 
+def _iface_last_flapped(dev, iface: str) -> "datetime.datetime | None":
+    """Return the ``Last flapped`` time of an interface, or None.
+
+    Parses the absolute timestamp from ``show interfaces <iface>``
+    (``Last flapped   : 2026-06-05 14:00:00 JST (...)``).  Returns None when
+    the field is absent (e.g. ``Never``) or unparseable.  The timestamp is
+    naive local time; JunOS prints it in the device's configured time zone,
+    which is assumed to match the server running this check.
+    """
+    try:
+        out = dev.cli(f"show interfaces {iface}", warning=False)
+    except Exception:
+        return None
+    m = _LAST_FLAPPED_RE.search(out)
+    if not m:
+        return None
+    try:
+        return datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
 def _check_host_health(hostname: str, dev, since_hours: int) -> dict:
     """Run four health checks on a single connected device.
 
@@ -1254,19 +1280,38 @@ def _check_host_health(hostname: str, dev, since_hours: int) -> dict:
     except Exception as exc:
         anomalies.append(f"[CHECK_ERROR] chassis alarms: {exc}")
 
-    # 3. Interface down
+    # 3. Interface down — report only described, admin-up ports whose link
+    #    went down within the window (issue #15).  ``show interfaces
+    #    descriptions`` lists only interfaces that have a description (= meant
+    #    to be in use); undescribed unused ports never appear.  ``Last
+    #    flapped`` filters out chronically-down ports, leaving genuine recent
+    #    failures (uplinks / inter-switch links carry descriptions).
     try:
-        out = dev.cli("show interfaces terse", warning=False)
-        down_ifs = [
-            m.group(1)
-            for m in _IF_DOWN_RE.finditer(out)
-            if not m.group(1).startswith(_IF_DOWN_SKIP_PREFIX)
-            and not m.group(1).endswith(_IF_DOWN_SKIP_SUFFIX)
-        ]
-        for iface in down_ifs:
-            anomalies.append(f"[IF_DOWN] {iface}")
+        out = dev.cli("show interfaces descriptions", warning=False)
+        cutoff = datetime.datetime.now() - datetime.timedelta(hours=since_hours)
+        for line in out.splitlines():
+            parts = line.split(None, 3)
+            # Columns: Interface  Admin  Link  Description
+            if len(parts) < 4 or parts[0] == "Interface":
+                continue
+            iface, admin, link = parts[0], parts[1].lower(), parts[2].lower()
+            if admin != "up" or link != "down":
+                continue
+            if iface.startswith(_IF_DOWN_SKIP_PREFIX) or iface.endswith(
+                _IF_DOWN_SKIP_SUFFIX
+            ):
+                continue
+            flapped = _iface_last_flapped(dev, iface)
+            if flapped is None:
+                # Link down but flap time unknown — report conservatively.
+                anomalies.append(f"[IF_DOWN] {iface} (described, link down)")
+            elif flapped >= cutoff:
+                anomalies.append(
+                    f"[IF_DOWN] {iface} (down since {flapped:%Y-%m-%d %H:%M})"
+                )
+            # else: down longer than since_hours — chronic, suppressed
     except Exception as exc:
-        anomalies.append(f"[CHECK_ERROR] interfaces terse: {exc}")
+        anomalies.append(f"[CHECK_ERROR] interfaces descriptions: {exc}")
 
     # 4. Syslog alert patterns within the time window
     try:
@@ -1301,7 +1346,11 @@ def daily_brief(
 
     Checks per host (Phase 1):
     - ``show system alarms`` / ``show chassis alarms``
-    - ``show interfaces terse`` — interface up/down (loopback excluded)
+    - ``show interfaces descriptions`` — a physical interface is flagged
+      ``[IF_DOWN]`` only when it has a description (``Admin=up``, ``Link=down``)
+      and its ``Last flapped`` time is within ``since_hours``.  Undescribed
+      unused ports and chronically-down ports are suppressed (loopback / mgmt /
+      internal logical units are also excluded).
     - ``show log messages | last 200`` — alert patterns within ``since_hours``
 
     Syslog patterns watched: BGP state change away from Established, STP port
