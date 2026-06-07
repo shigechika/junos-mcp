@@ -10,6 +10,7 @@ import pytest
 import junos_mcp.pool as pool_module
 from junos_ops import common
 from junos_mcp.server import (
+    _collect_brief,
     _connect_and_run,
     _ensure_config,
     _init_globals,
@@ -33,6 +34,7 @@ from junos_mcp.server import (
     get_router_list,
     get_version,
     list_remote_files,
+    daily_brief,
     run_show_command,
     run_show_command_batch,
     run_show_commands,
@@ -1260,3 +1262,176 @@ class TestScheduleReboot:
         result = schedule_reboot("rt1.example.jp", "2601020304", dry_run=False)
         assert "FAILED" in result
         assert "code=4" in result
+
+
+# ---------------------------------------------------------------------------
+# daily_brief
+# ---------------------------------------------------------------------------
+
+
+def _fake_dev(facts=None, uptime="", alarms="No alarms currently active", routes=""):
+    """Build a MagicMock JUNOS device for _collect_brief tests."""
+    dev = MagicMock()
+    dev.facts = facts if facts is not None else {"model": "MX240", "version": "21.4R3-S1", "2RE": False}
+
+    def _cli(command):
+        if "uptime" in command:
+            return uptime
+        if "alarms" in command:
+            return alarms
+        if "route summary" in command:
+            return routes
+        return ""
+
+    dev.cli.side_effect = _cli
+    return dev
+
+
+_HEALTHY_UPTIME = "ydc-gw1 ... up 45 days, 3:21, 2 users, load averages: 0.20, 0.18, 0.15"
+
+
+def test_collect_brief_all_ok():
+    dev = _fake_dev(
+        uptime=_HEALTHY_UPTIME,
+        routes=(
+            "inet.0: 152 destinations, 200 routes (152 active, 0 holddown, 0 hidden)\n"
+            "inet6.0: 30 destinations, 40 routes (30 active, 0 holddown, 0 hidden)"
+        ),
+    )
+    r = _collect_brief(dev, 2.0)
+    assert r["anomalies"] == []
+    assert r["info"]["load"] == 0.20
+    assert r["info"]["uptime"] == "45d"
+    assert r["info"]["alarms"] == 0
+    assert r["info"]["routes"]["inet.0"] == {"destinations": 152, "active": 152}
+    assert r["info"]["routes"]["inet6.0"]["active"] == 30
+
+
+def test_collect_brief_high_load_warns():
+    dev = _fake_dev(uptime="up 10 days, load averages: 2.50, 2.10, 1.90")
+    r = _collect_brief(dev, 2.0)
+    assert any("WARNING: load average 2.5" in a for a in r["anomalies"])
+
+
+def test_collect_brief_recent_reboot_warns():
+    dev = _fake_dev(uptime="up 3:21, 2 users, load averages: 0.10, 0.10, 0.10")
+    r = _collect_brief(dev, 2.0)
+    assert r["info"]["uptime"] == "<1d"
+    assert any("recent reboot" in a for a in r["anomalies"])
+
+
+def test_collect_brief_major_alarm_critical():
+    dev = _fake_dev(
+        uptime="up 10 days, load averages: 0.10, 0.10, 0.10",
+        alarms=(
+            "1 alarms currently active\n"
+            "Alarm time               Class  Description\n"
+            "2024-01-01 00:00:00 UTC  Major  PEM 0 Not OK"
+        ),
+    )
+    r = _collect_brief(dev, 2.0)
+    assert r["info"]["alarms"] == 1
+    assert any(a.startswith("CRITICAL: alarm") and "PEM 0" in a for a in r["anomalies"])
+
+
+def test_collect_brief_minor_alarm_warns():
+    dev = _fake_dev(
+        uptime="up 10 days, load averages: 0.10, 0.10, 0.10",
+        alarms=(
+            "1 alarms currently active\n"
+            "Alarm time               Class  Description\n"
+            "2024-01-01 00:00:00 UTC  Minor  Rescue configuration is not set"
+        ),
+    )
+    r = _collect_brief(dev, 2.0)
+    assert any(a.startswith("WARNING: alarm") and "Rescue" in a for a in r["anomalies"])
+
+
+def test_collect_brief_dual_re_down_critical():
+    dev = _fake_dev(
+        facts={
+            "model": "MX480",
+            "version": "21.4R3",
+            "2RE": True,
+            "RE0": {"status": "OK"},
+            "RE1": {"status": "Present"},
+        },
+        uptime="up 5 days, load averages: 0.10, 0.10, 0.10",
+    )
+    r = _collect_brief(dev, 2.0)
+    assert any("CRITICAL: RE1 status=Present" in a for a in r["anomalies"])
+
+
+def test_collect_brief_route_baseline_deviation_warns():
+    dev = _fake_dev(
+        uptime="up 5 days, load averages: 0.10, 0.10, 0.10",
+        routes="inet.0: 160 destinations, 200 routes (160 active, 0 holddown, 0 hidden)",
+    )
+    r = _collect_brief(dev, 2.0, route_baseline=152)
+    assert any("baseline 152" in a and "160" in a for a in r["anomalies"])
+
+
+def test_collect_brief_route_baseline_match_no_warn():
+    dev = _fake_dev(
+        uptime="up 5 days, load averages: 0.10, 0.10, 0.10",
+        routes="inet.0: 152 destinations, 200 routes (152 active, 0 holddown, 0 hidden)",
+    )
+    r = _collect_brief(dev, 2.0, route_baseline=152)
+    assert not any("baseline" in a for a in r["anomalies"])
+
+
+def test_daily_brief_formats_tiers_and_summary():
+    canned = {
+        "rt1.example.jp": {
+            "anomalies": ["CRITICAL: RE1 status=Present"],
+            "info": {"model": "MX480", "version": "21", "uptime": "45d", "load": 0.1},
+        },
+        "rt2.example.jp": {
+            "anomalies": ["WARNING: load average 2.5 > 2.0"],
+            "info": {"model": "MX240", "version": "21", "uptime": "10d", "load": 2.5},
+        },
+        "rt3.example.jp": {
+            "anomalies": [],
+            "info": {
+                "model": "MX240",
+                "version": "21",
+                "uptime": "30d",
+                "load": 0.2,
+                "routes": {"inet.0": {"destinations": 152, "active": 152}},
+            },
+        },
+    }
+    targets = list(canned)
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=targets),
+        patch("junos_mcp.server._connect_and_run", side_effect=lambda h, cp, op: canned[h]),
+    ):
+        out = daily_brief(hostnames=targets)
+    assert "### rt1.example.jp [CRITICAL]" in out
+    assert "### rt2.example.jp [WARNING]" in out
+    assert "### rt3.example.jp [OK]" in out
+    assert "- routes: inet.0 152dest/152active" in out
+    assert "CRITICAL: 1 台" in out
+    assert "WARNING:  1 台" in out
+    assert "OK:       1 台" in out
+
+
+def test_daily_brief_connection_error_is_critical():
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=["rt1.example.jp"]),
+        patch("junos_mcp.server._connect_and_run", return_value="Connection error: boom"),
+    ):
+        out = daily_brief(hostnames=["rt1.example.jp"])
+    assert "[CRITICAL]" in out
+    assert "Connection error: boom" in out
+
+
+def test_daily_brief_no_hosts_resolved():
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=[]),
+    ):
+        out = daily_brief(hostnames=[])
+    assert "No hosts resolved" in out

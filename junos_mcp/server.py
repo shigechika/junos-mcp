@@ -1,8 +1,8 @@
 """MCP server exposing junos-ops device operations.
 
-Provides 22 tools for Juniper Networks device management: device info,
+Provides 23 tools for Juniper Networks device management: device info,
 CLI execution, config management, firmware upgrade, RSI/SCF collection,
-and pre-flight checks.
+pre-flight checks, and a daily-brief health summary.
 
 Supports STDIO and Streamable HTTP transports.
 
@@ -16,6 +16,7 @@ module, so the MCP STDIO JSON-RPC channel is safe by construction.
 """
 
 import argparse
+import datetime
 import os
 import os.path
 import re
@@ -1111,6 +1112,206 @@ def schedule_reboot(
         )
 
     return _connect_and_run(hostname, config_path, _operation)
+
+
+# ---------------------------------------------------------------------------
+# daily_brief — one-shot health summary for morning patrol
+# ---------------------------------------------------------------------------
+
+# "... load averages: 0.20, 0.18, 0.15" — captures the 1-minute average.
+_LOAD_RE = re.compile(r"load averages?:\s*([\d.]+)")
+# "... up 45 days, ..." — captures uptime in whole days (absent for < 1 day).
+_UPTIME_DAYS_RE = re.compile(r"\bup\s+(\d+)\s+day")
+# "inet.0: 152 destinations, 200 routes (152 active, ...)" per routing table.
+_ROUTE_TABLE_RE = re.compile(
+    r"^(inet6?\.0):\s+(\d+) destinations,\s+\d+ routes \((\d+) active", re.MULTILINE
+)
+
+
+def _collect_brief(dev, load_threshold: float, route_baseline: int = 0) -> dict:
+    """Run generic JUNOS health checks on a connected device for daily_brief.
+
+    Checks device facts (model/version, routing-engine redundancy), system
+    uptime/load average, system alarms, and route-summary counts. Returns
+    ``{"anomalies": list[str], "info": dict}`` where each anomaly is prefixed
+    ``CRITICAL:`` or ``WARNING:``. ``route_baseline`` (when > 0) flags an
+    ``inet.0`` destination count that differs from the expected value.
+    """
+    anomalies: list[str] = []
+    info: dict = {}
+
+    # Device facts (model / version / RE redundancy) — cached on connect.
+    try:
+        facts = dev.facts
+        info["model"] = facts.get("model") or "?"
+        info["version"] = facts.get("version") or "?"
+        if facts.get("2RE"):
+            for re_name in ("RE0", "RE1"):
+                re_info = facts.get(re_name) or {}
+                status = (re_info.get("status") or "").strip()
+                if status and status.lower() != "ok":
+                    anomalies.append(f"CRITICAL: {re_name} status={status}")
+    except Exception as exc:
+        anomalies.append(f"WARNING: cannot read facts: {exc}")
+
+    # Uptime / load average ("show system uptime").
+    try:
+        uptime_out = dev.cli("show system uptime")
+        m = _LOAD_RE.search(uptime_out)
+        if m:
+            load1 = float(m.group(1))
+            info["load"] = load1
+            if load1 > load_threshold:
+                anomalies.append(f"WARNING: load average {load1} > {load_threshold}")
+        days = _UPTIME_DAYS_RE.search(uptime_out)
+        if days:
+            info["uptime"] = f"{days.group(1)}d"
+        else:
+            info["uptime"] = "<1d"
+            anomalies.append("WARNING: uptime < 1 day — recent reboot?")
+    except Exception as exc:
+        anomalies.append(f"WARNING: uptime check failed: {exc}")
+
+    # System alarms ("show system alarms"). Major -> CRITICAL, Minor -> WARNING.
+    try:
+        alarm_out = dev.cli("show system alarms")
+        if "No alarms currently active" in alarm_out:
+            info["alarms"] = 0
+        else:
+            count = 0
+            for line in alarm_out.splitlines():
+                cls = re.search(r"\b(Major|Minor)\b", line)
+                if not cls:
+                    continue
+                count += 1
+                desc = line.strip()
+                tier = "CRITICAL" if cls.group(1) == "Major" else "WARNING"
+                anomalies.append(f"{tier}: alarm: {desc}")
+            info["alarms"] = count
+            if count == 0:
+                # Active alarms reported but the rows could not be parsed.
+                anomalies.append("WARNING: active alarms present (unparsed)")
+    except Exception as exc:
+        anomalies.append(f"WARNING: alarm check failed: {exc}")
+
+    # Route summary ("show route summary") — inet.0 / inet6.0 counts.
+    try:
+        route_out = dev.cli("show route summary")
+        routes: dict = {}
+        for tbl, dest, active in _ROUTE_TABLE_RE.findall(route_out):
+            routes[tbl] = {"destinations": int(dest), "active": int(active)}
+        if routes:
+            info["routes"] = routes
+        if route_baseline and "inet.0" in routes:
+            dest = routes["inet.0"]["destinations"]
+            if dest != route_baseline:
+                anomalies.append(
+                    f"WARNING: inet.0 {dest} destinations (baseline {route_baseline})"
+                )
+    except Exception as exc:
+        anomalies.append(f"WARNING: route summary failed: {exc}")
+
+    return {"anomalies": anomalies, "info": info}
+
+
+@mcp.tool()
+def daily_brief(
+    hostnames: list[str] | None = None,
+    tags: list[str] | None = None,
+    load_threshold: float = 2.0,
+    route_baseline: int = 0,
+    max_workers: int = 5,
+    config_path: str = "",
+) -> str:
+    """Run health checks on JUNOS devices and return a Markdown daily brief.
+
+    Checks device facts (model/version, routing-engine redundancy), system
+    uptime/load average, system alarms, and route-summary counts (inet.0 /
+    inet6.0), reporting CRITICAL/WARNING/OK per device with a summary. Select
+    targets via ``hostnames``, ``tags``, or both (default: all configured
+    devices).
+
+    Args:
+        hostnames: Target device hostnames (must exist in config.ini).
+        tags: Tag filter (same semantics as run_show_command_batch).
+        load_threshold: 1-minute load average above which a WARNING is raised.
+        route_baseline: When > 0, flag any device whose inet.0 destination
+            count differs from this value. Scope with ``tags`` — e.g.
+            ``tags=["main"], route_baseline=152`` — because full-table routers
+            carry far more routes than access routers.
+        max_workers: Maximum parallel threads (default 5).
+        config_path: Path to config.ini (empty string uses default search).
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return err
+
+    targets = _resolve_hostnames(hostnames, tags)
+    if isinstance(targets, str):
+        return targets
+    if not targets:
+        return "No hosts resolved."
+
+    def _check_one(hostname):
+        def _operation(_hostname, dev):
+            return _collect_brief(dev, load_threshold, route_baseline)
+
+        result = _connect_and_run(hostname, config_path, _operation)
+        if isinstance(result, dict):
+            return result
+        # _connect_and_run returned an error string (connection/config failure).
+        return {"anomalies": [f"CRITICAL: {result}"], "info": {}}
+
+    results = common.run_parallel(_check_one, targets, max_workers=max_workers)
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [f"## JUNOS デイリーブリーフ（{now}）", ""]
+    critical_count = warning_count = ok_count = 0
+
+    for host in targets:
+        r = results.get(host) or {"anomalies": ["CRITICAL: no result"], "info": {}}
+        anomalies = r.get("anomalies", [])
+        info = r.get("info", {})
+
+        criticals = [a for a in anomalies if a.startswith("CRITICAL")]
+        warnings = [a for a in anomalies if a.startswith("WARNING")]
+        if criticals:
+            status = "CRITICAL"
+            critical_count += 1
+        elif warnings:
+            status = "WARNING"
+            warning_count += 1
+        else:
+            status = "OK"
+            ok_count += 1
+
+        lines.append(f"### {host} [{status}]")
+        load = info.get("load")
+        load_str = f"  load: {load}" if load is not None else ""
+        lines.append(
+            f"- model: {info.get('model', '?')}  JUNOS {info.get('version', '?')}"
+            f"  uptime: {info.get('uptime', '?')}{load_str}"
+        )
+        routes = info.get("routes")
+        if routes:
+            parts = [
+                f"{tbl} {routes[tbl]['destinations']}dest/{routes[tbl]['active']}active"
+                for tbl in ("inet.0", "inet6.0")
+                if tbl in routes
+            ]
+            if parts:
+                lines.append(f"- routes: {'  '.join(parts)}")
+        for a in criticals + warnings:
+            lines.append(f"- {a}")
+        lines.append("")
+
+    lines += [
+        "### サマリー",
+        f"- CRITICAL: {critical_count} 台",
+        f"- WARNING:  {warning_count} 台",
+        f"- OK:       {ok_count} 台",
+    ]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

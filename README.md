@@ -57,6 +57,12 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | `collect_rsi` | Collect RSI/SCF with model-specific timeouts | Yes |
 | `collect_rsi_batch` | Collect RSI/SCF from multiple devices in parallel (supports tag filter) | Yes |
 
+### Daily Brief
+
+| Tool | Description | Connection |
+|------|-------------|:----------:|
+| `daily_brief` | One-shot health summary across devices — facts / RE redundancy, uptime & load average, system alarms, and route-summary counts — returning CRITICAL/WARNING/OK tiers in parallel (supports tag filter). Optional `route_baseline` flags an unexpected `inet.0` destination count. | Yes |
+
 ### Pre-flight Checks
 
 Equivalent to the `junos-ops check` subcommand modes. All three reuse the
@@ -279,7 +285,7 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-94 tests covering all 22 tools, the connection pool, helper functions, and edge cases.
+105 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
 
 ## Architecture
 
