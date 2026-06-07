@@ -3,7 +3,7 @@
 import argparse
 import configparser
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -1347,19 +1347,127 @@ def test_collect_brief_minor_alarm_warns():
     assert any(a.startswith("WARNING: alarm") and "Rescue" in a for a in r["anomalies"])
 
 
-def test_collect_brief_dual_re_down_critical():
+def test_collect_brief_dual_re_fault_critical():
+    """An explicit RE fault status pages CRITICAL."""
     dev = _fake_dev(
         facts={
             "model": "MX480",
             "version": "21.4R3",
             "2RE": True,
             "RE0": {"status": "OK"},
-            "RE1": {"status": "Present"},
+            "RE1": {"status": "Fault"},
         },
         uptime="up 5 days, load averages: 0.10, 0.10, 0.10",
     )
     r = _collect_brief(dev, 2.0)
-    assert any("CRITICAL: RE1 status=Present" in a for a in r["anomalies"])
+    assert any("CRITICAL: RE1 status=Fault" in a for a in r["anomalies"])
+
+
+def test_collect_brief_dual_re_healthy_backup_no_warn():
+    """A healthy backup RE (status Present/Backup, not 'OK') must NOT page."""
+    dev = _fake_dev(
+        facts={
+            "model": "MX480",
+            "version": "21.4R3",
+            "2RE": True,
+            "RE0": {"status": "OK", "mastership_state": "master"},
+            "RE1": {"status": "Present", "mastership_state": "backup"},
+        },
+        uptime="up 5 days, load averages: 0.10, 0.10, 0.10",
+    )
+    r = _collect_brief(dev, 2.0)
+    assert not any("RE1" in a for a in r["anomalies"])
+
+
+def test_collect_brief_dual_re_uptime_worst_case():
+    """With per-RE blocks, the highest load and a sub-day RE are surfaced."""
+    dev = _fake_dev(
+        facts={"model": "MX480", "version": "21", "2RE": True, "RE0": {"status": "OK"}, "RE1": {"status": "OK"}},
+        uptime=(
+            "re0:\n--------\n12:00PM  up 45 days, 4:00, 1 user, load averages: 0.20, 0.18, 0.15\n"
+            "\nre1:\n--------\n12:00PM  up 3:21, 1 user, load averages: 2.50, 2.10, 1.90"
+        ),
+    )
+    r = _collect_brief(dev, 2.0)
+    assert r["info"]["load"] == 2.50  # max across REs
+    assert r["info"]["uptime"] == "<1d"  # re1 rebooted
+    assert any("load average 2.5" in a for a in r["anomalies"])
+    assert any("recent reboot" in a for a in r["anomalies"])
+
+
+def test_collect_brief_uptime_unparseable_warns_not_reboot():
+    """Empty/garbled uptime is reported as a parse failure, not a reboot."""
+    dev = _fake_dev(uptime="garbage with no uptime line")
+    r = _collect_brief(dev, 2.0)
+    assert r["info"]["uptime"] == "?"
+    assert any("could not parse" in a for a in r["anomalies"])
+    assert not any("recent reboot" in a for a in r["anomalies"])
+
+
+def test_collect_brief_facts_failure_warns():
+    """A facts read failure degrades to a WARNING; other sections still run."""
+    dev = _fake_dev(uptime="up 5 days, load averages: 0.10, 0.10, 0.10")
+    type(dev).facts = PropertyMock(side_effect=RuntimeError("rpc auth failed"))
+    r = _collect_brief(dev, 2.0)
+    assert any(a.startswith("WARNING: cannot read facts:") for a in r["anomalies"])
+    assert "model" not in r["info"]  # falls back to "?" in the brief
+    assert r["info"]["uptime"] == "5d"  # other checks still populate
+
+
+def test_collect_brief_cli_failure_warns_per_section():
+    """A dev.cli failure on one command degrades only that section."""
+    dev = _fake_dev()
+
+    def _cli(command):
+        if "alarms" in command:
+            raise RuntimeError("RpcTimeoutError")
+        if "uptime" in command:
+            return "up 5 days, load averages: 0.10, 0.10, 0.10"
+        if "route summary" in command:
+            return "inet.0: 152 destinations, 200 routes (152 active, 0 holddown, 0 hidden)"
+        return ""
+
+    dev.cli.side_effect = _cli
+    r = _collect_brief(dev, 2.0)
+    assert any(a.startswith("WARNING: alarm check failed:") for a in r["anomalies"])
+    assert r["info"]["uptime"] == "5d"
+    assert r["info"]["routes"]["inet.0"]["destinations"] == 152
+
+
+def test_collect_brief_multiple_alarms():
+    """Two alarm rows yield count==2 with one CRITICAL and one WARNING; the
+    header and count lines are not miscounted."""
+    dev = _fake_dev(
+        uptime="up 10 days, load averages: 0.10, 0.10, 0.10",
+        alarms=(
+            "2 alarms currently active\n"
+            "Alarm time               Class  Description\n"
+            "2024-01-01 00:00:00 UTC  Major  PEM 0 Not OK\n"
+            "2024-01-01 00:00:00 UTC  Minor  Rescue configuration is not set"
+        ),
+    )
+    r = _collect_brief(dev, 2.0)
+    assert r["info"]["alarms"] == 2
+    assert sum(a.startswith("CRITICAL: alarm") for a in r["anomalies"]) == 1
+    assert sum(a.startswith("WARNING: alarm") for a in r["anomalies"]) == 1
+
+
+def test_collect_brief_route_ignores_vrf_and_mgmt_tables():
+    """Routing-instance tables (VRF/mgmt) must not leak into inet.0 counts."""
+    dev = _fake_dev(
+        uptime="up 5 days, load averages: 0.10, 0.10, 0.10",
+        routes=(
+            "inet.0: 152 destinations, 200 routes (152 active, 0 holddown, 0 hidden)\n"
+            "mgmt_junos.inet.0: 3 destinations, 3 routes (3 active, 0 holddown, 0 hidden)\n"
+            "VRF-CUST.inet.0: 9999 destinations, 12000 routes (9999 active, 0 holddown, 0 hidden)\n"
+            "inet6.0: 30 destinations, 40 routes (30 active, 0 holddown, 0 hidden)\n"
+            "VRF-CUST.inet6.0: 500 destinations, 600 routes (500 active, 0 holddown, 0 hidden)"
+        ),
+    )
+    r = _collect_brief(dev, 2.0, route_baseline=152)
+    assert set(r["info"]["routes"]) == {"inet.0", "inet6.0"}
+    assert r["info"]["routes"]["inet.0"] == {"destinations": 152, "active": 152}
+    assert not any("baseline" in a for a in r["anomalies"])  # VRF's 9999 must not fire
 
 
 def test_collect_brief_route_baseline_deviation_warns():
@@ -1435,3 +1543,68 @@ def test_daily_brief_no_hosts_resolved():
     ):
         out = daily_brief(hostnames=[])
     assert "No hosts resolved" in out
+
+
+def test_daily_brief_route_baseline_forwarded_end_to_end():
+    """route_baseline reaches _collect_brief through the real _operation closure."""
+    fake = _fake_dev(
+        uptime="up 5 days, load averages: 0.1, 0.1, 0.1",
+        routes="inet.0: 160 destinations, 200 routes (160 active, 0 holddown, 0 hidden)",
+    )
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=["rt1.example.jp"]),
+        patch("junos_mcp.server._connect_and_run", side_effect=lambda h, cp, op: op(h, fake)),
+    ):
+        out = daily_brief(hostnames=["rt1.example.jp"], route_baseline=152)
+    assert "[WARNING]" in out
+    assert "baseline 152" in out and "160" in out
+
+
+def test_daily_brief_dropped_worker_is_critical_not_crash():
+    """A non-dict result (the int sentinel run_parallel stores on a crashed
+    worker) degrades to CRITICAL instead of crashing the whole brief."""
+    targets = ["rt1.example.jp", "rt2.example.jp"]
+    canned = {
+        "rt1.example.jp": {"anomalies": [], "info": {"model": "MX240"}},
+        "rt2.example.jp": 1,  # run_parallel sentinel for a raised worker
+    }
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=targets),
+        patch("junos_mcp.server.common.run_parallel", return_value=canned),
+    ):
+        out = daily_brief(hostnames=targets)
+    assert "### rt2.example.jp [CRITICAL]" in out
+    assert "CRITICAL: no result" in out
+    assert "CRITICAL: 1 台" in out
+
+
+def test_daily_brief_connection_setup_exception_is_critical():
+    """An exception raised by _connect_and_run (not just a returned error
+    string) is isolated per host and rendered CRITICAL."""
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=["rt1.example.jp"]),
+        patch("junos_mcp.server._connect_and_run", side_effect=ValueError("invalid port")),
+    ):
+        out = daily_brief(hostnames=["rt1.example.jp"])
+    assert "[CRITICAL]" in out
+    assert "invalid port" in out
+
+
+def test_daily_brief_ok_device_shows_normal_line():
+    canned = {
+        "rt1.example.jp": {
+            "anomalies": [],
+            "info": {"model": "MX240", "version": "21", "uptime": "30d", "load": 0.1, "alarms": 0},
+        }
+    }
+    with (
+        patch("junos_mcp.server._ensure_config", return_value=None),
+        patch("junos_mcp.server._resolve_hostnames", return_value=["rt1.example.jp"]),
+        patch("junos_mcp.server._connect_and_run", side_effect=lambda h, cp, op: canned[h]),
+    ):
+        out = daily_brief(hostnames=["rt1.example.jp"])
+    assert "[OK]" in out
+    assert "異常なし" in out

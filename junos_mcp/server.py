@@ -1122,10 +1122,18 @@ def schedule_reboot(
 _LOAD_RE = re.compile(r"load averages?:\s*([\d.]+)")
 # "... up 45 days, ..." — captures uptime in whole days (absent for < 1 day).
 _UPTIME_DAYS_RE = re.compile(r"\bup\s+(\d+)\s+day")
+# Any uptime summary line ("... up 45 days ..." or "... up 3:21 ..."). Counting
+# these distinguishes a genuine sub-day uptime from unparseable output, and on a
+# dual-RE chassis there is one such line per RE.
+_UPTIME_LINE_RE = re.compile(r"\bup\s+\d")
 # "inet.0: 152 destinations, 200 routes (152 active, ...)" per routing table.
+# The ^ anchor (re.MULTILINE) keeps routing-instance tables (``VRF.inet.0:``) out.
 _ROUTE_TABLE_RE = re.compile(
     r"^(inet6?\.0):\s+(\d+) destinations,\s+\d+ routes \((\d+) active", re.MULTILINE
 )
+# RE <status> strings that indicate a genuine fault. A healthy backup RE may
+# report Present/Online/Backup (platform-dependent), so only these page CRITICAL.
+_RE_FAULT_STATES = {"fault", "fail", "failed", "offline", "absent", "empty", "testing"}
 
 
 def _collect_brief(dev, load_threshold: float, route_baseline: int = 0) -> dict:
@@ -1149,26 +1157,35 @@ def _collect_brief(dev, load_threshold: float, route_baseline: int = 0) -> dict:
             for re_name in ("RE0", "RE1"):
                 re_info = facts.get(re_name) or {}
                 status = (re_info.get("status") or "").strip()
-                if status and status.lower() != "ok":
+                # The RE <status> string is platform/version dependent — a healthy
+                # backup may report Present/Online/Backup, not "OK" — so page only
+                # on an explicit fault state, never on the mere absence of "OK".
+                if status.lower() in _RE_FAULT_STATES:
                     anomalies.append(f"CRITICAL: {re_name} status={status}")
     except Exception as exc:
         anomalies.append(f"WARNING: cannot read facts: {exc}")
 
-    # Uptime / load average ("show system uptime").
+    # Uptime / load average ("show system uptime"). A dual-RE chassis prints one
+    # block per RE, so report the worst case: the highest load and shortest uptime.
     try:
         uptime_out = dev.cli("show system uptime")
-        m = _LOAD_RE.search(uptime_out)
-        if m:
-            load1 = float(m.group(1))
-            info["load"] = load1
-            if load1 > load_threshold:
-                anomalies.append(f"WARNING: load average {load1} > {load_threshold}")
-        days = _UPTIME_DAYS_RE.search(uptime_out)
-        if days:
-            info["uptime"] = f"{days.group(1)}d"
-        else:
+        loads = [float(x) for x in _LOAD_RE.findall(uptime_out)]
+        if loads:
+            max_load = max(loads)
+            info["load"] = max_load
+            if max_load > load_threshold:
+                anomalies.append(f"WARNING: load average {max_load} > {load_threshold}")
+        day_counts = [int(d) for d in _UPTIME_DAYS_RE.findall(uptime_out)]
+        uptime_lines = len(_UPTIME_LINE_RE.findall(uptime_out))
+        if not uptime_lines:
+            info["uptime"] = "?"
+            anomalies.append("WARNING: could not parse system uptime")
+        elif len(day_counts) < uptime_lines:
+            # At least one RE block lacks a day count, i.e. has been up < 1 day.
             info["uptime"] = "<1d"
             anomalies.append("WARNING: uptime < 1 day — recent reboot?")
+        else:
+            info["uptime"] = f"{min(day_counts)}d"
     except Exception as exc:
         anomalies.append(f"WARNING: uptime check failed: {exc}")
 
@@ -1256,7 +1273,13 @@ def daily_brief(
         def _operation(_hostname, dev):
             return _collect_brief(dev, load_threshold, route_baseline)
 
-        result = _connect_and_run(hostname, config_path, _operation)
+        # Isolate per-host failures: _connect_and_run only catches
+        # PoolConnectionError, so a connection-setup error of any other type
+        # (e.g. a malformed port) must not escape and abort the whole brief.
+        try:
+            result = _connect_and_run(hostname, config_path, _operation)
+        except Exception as exc:  # noqa: BLE001
+            return {"anomalies": [f"CRITICAL: {exc}"], "info": {}}
         if isinstance(result, dict):
             return result
         # _connect_and_run returned an error string (connection/config failure).
@@ -1269,7 +1292,11 @@ def daily_brief(
     critical_count = warning_count = ok_count = 0
 
     for host in targets:
-        r = results.get(host) or {"anomalies": ["CRITICAL: no result"], "info": {}}
+        r = results.get(host)
+        if not isinstance(r, dict):
+            # common.run_parallel stores a sentinel (int 1) when a worker raised;
+            # coerce any non-dict so one bad host cannot crash the whole render.
+            r = {"anomalies": ["CRITICAL: no result"], "info": {}}
         anomalies = r.get("anomalies", [])
         info = r.get("info", {})
 
@@ -1303,6 +1330,9 @@ def daily_brief(
                 lines.append(f"- routes: {'  '.join(parts)}")
         for a in criticals + warnings:
             lines.append(f"- {a}")
+        if status == "OK":
+            # Affirm the checks ran and passed (mirrors the sibling MCPs).
+            lines.append("- 異常なし（alarms: なし）")
         lines.append("")
 
     lines += [

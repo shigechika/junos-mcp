@@ -285,7 +285,7 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-105 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
+116 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
 
 ## Architecture
 
