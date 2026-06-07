@@ -72,7 +72,7 @@ junos-ops display layer for table rendering.
 
 | Tool | Description | Connection |
 |------|-------------|:----------:|
-| `daily_brief` | Morning health check across multiple devices in parallel — alarms, interface up/down, and syslog alert patterns within a look-back window (`since_hours`, default 18 h). Returns a CRITICAL/WARNING/OK Markdown summary. | Yes |
+| `daily_brief` | Morning health check across multiple devices in parallel — alarms, interface up/down, syslog alert patterns within a look-back window (`since_hours`, default 18 h), dual-RE faults (`[RE_FAULT]`), and an optional `inet.0` route-count baseline (`route_baseline`, e.g. `tags=["main"], route_baseline=152`). Returns a CRITICAL/WARNING/OK Markdown summary. | Yes |
 
 ### Safety by Design
 
@@ -306,7 +306,7 @@ mcp dev junos_mcp/server.py
 pytest tests/ -v
 ```
 
-115 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
+133 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
 
 ## Architecture
 

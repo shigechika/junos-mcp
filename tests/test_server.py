@@ -3,7 +3,7 @@
 import argparse
 import configparser
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -1387,8 +1387,11 @@ class TestCheckHostHealth:
                   chassis_alarms="No alarms currently active",
                   descriptions="",
                   flapped=None,
-                  syslog=""):
+                  syslog="",
+                  facts=None,
+                  route_summary=""):
         dev = MagicMock()
+        dev.facts = facts if facts is not None else {"2RE": False}
         flaps = flapped or {}
 
         def _cli(cmd, **kw):
@@ -1400,6 +1403,8 @@ class TestCheckHostHealth:
                 return descriptions
             if cmd == "show log messages | last 200":
                 return syslog
+            if cmd == "show route summary":
+                return route_summary
             if cmd.startswith("show interfaces "):
                 iface = cmd.split()[2]
                 ts = flaps.get(iface)
@@ -1542,6 +1547,105 @@ class TestCheckHostHealth:
         assert len(syslog_entries) == 11
         assert any("truncated" in a for a in syslog_entries)
 
+    # --- routing-engine redundancy ([RE_FAULT]) ---
+
+    def test_re_fault_flagged(self):
+        """An explicit RE fault on a dual-RE chassis is flagged [RE_FAULT]."""
+        dev = self._make_dev(
+            facts={"2RE": True, "RE0": {"status": "OK"}, "RE1": {"status": "Fault"}}
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert any("[RE_FAULT] RE1 status=Fault" in a for a in result["anomalies"])
+
+    def test_re_healthy_backup_not_flagged(self):
+        """A healthy backup RE (status Present/Backup, not 'OK') must NOT flag."""
+        dev = self._make_dev(
+            facts={"2RE": True, "RE0": {"status": "OK"}, "RE1": {"status": "Present"}}
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("RE_FAULT" in a for a in result["anomalies"])
+
+    def test_single_re_no_redundancy_check(self):
+        dev = self._make_dev(facts={"2RE": False})
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("RE_FAULT" in a for a in result["anomalies"])
+
+    # --- route-summary baseline ([ROUTE_BASELINE]) ---
+
+    def test_route_baseline_deviation_flagged(self):
+        dev = self._make_dev(
+            route_summary="inet.0: 160 destinations, 200 routes (160 active, 0 holddown, 0 hidden)"
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert any("[ROUTE_BASELINE]" in a and "160" in a for a in result["anomalies"])
+
+    def test_route_baseline_match_not_flagged(self):
+        dev = self._make_dev(
+            route_summary="inet.0: 152 destinations, 200 routes (152 active, 0 holddown, 0 hidden)"
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert not any("ROUTE_BASELINE" in a for a in result["anomalies"])
+
+    def test_route_baseline_zero_skips_check(self):
+        """route_baseline=0 (default) does not run the route-summary check."""
+        dev = self._make_dev()
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("ROUTE_BASELINE" in a for a in result["anomalies"])
+
+    def test_route_baseline_ignores_vrf_tables(self):
+        """Routing-instance tables (VRF/mgmt) must not fire the inet.0 baseline."""
+        dev = self._make_dev(
+            route_summary=(
+                "inet.0: 152 destinations, 200 routes (152 active, 0 holddown, 0 hidden)\n"
+                "VRF-CUST.inet.0: 9999 destinations, 12000 routes (9999 active, 0 holddown, 0 hidden)"
+            )
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert not any("ROUTE_BASELINE" in a for a in result["anomalies"])
+
+    def test_re_fault_all_states_flagged(self):
+        """Every fault state (and a mixed-case value) is matched case-insensitively."""
+        for state in ["Fault", "Fail", "Failed", "Offline", "Absent", "Empty", "Testing", "OFFLINE"]:
+            dev = self._make_dev(
+                facts={"2RE": True, "RE0": {"status": "OK"}, "RE1": {"status": state}}
+            )
+            result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+            assert any(f"[RE_FAULT] RE1 status={state}" in a for a in result["anomalies"]), state
+
+    def test_re_check_error_isolated(self):
+        """A dev.facts read failure degrades to [CHECK_ERROR]; other checks still run."""
+        dev = self._make_dev()  # all CLI checks clean
+        type(dev).facts = PropertyMock(side_effect=RuntimeError("rpc fail"))
+        try:
+            result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        finally:
+            del type(dev).facts  # avoid leaking the property onto the MagicMock class
+        assert any("[CHECK_ERROR] routing-engine" in a for a in result["anomalies"])
+        assert not any("[ALARM]" in a or "[IF_DOWN]" in a for a in result["anomalies"])
+
+    def test_route_summary_check_error_isolated(self):
+        """A show route summary failure degrades to [CHECK_ERROR], not a crash."""
+        dev = self._make_dev()
+        canned = dev.cli.side_effect
+
+        def _cli(cmd, **kw):
+            if cmd == "show route summary":
+                raise RuntimeError("RpcTimeoutError")
+            return canned(cmd, **kw)
+
+        dev.cli.side_effect = _cli
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert any("[CHECK_ERROR] route summary" in a for a in result["anomalies"])
+
+    def test_route_baseline_no_inet0_line_no_op(self):
+        """route_baseline with no inet.0 line in the output is a clean no-op."""
+        dev = self._make_dev(
+            route_summary="inet6.0: 30 destinations, 40 routes (30 active, 0 holddown, 0 hidden)"
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert not any("ROUTE_BASELINE" in a for a in result["anomalies"])
+        assert not any("CHECK_ERROR" in a for a in result["anomalies"])
+
 
 # --- daily_brief ---
 
@@ -1592,6 +1696,42 @@ class TestDailyBrief:
         mock_parallel.return_value = {}
         result = daily_brief(hostnames=["rt1.example.jp"])
         assert "1 CRITICAL" in result
+
+    @patch("junos_mcp.server.common.run_parallel")
+    def test_dropped_worker_sentinel_is_critical(self, mock_parallel, mock_config):
+        """A non-dict sentinel (the int 1 run_parallel stores for a crashed
+        worker) degrades to CRITICAL instead of crashing the whole brief."""
+        mock_parallel.return_value = {"rt1.example.jp": 1}
+        result = daily_brief(hostnames=["rt1.example.jp"])
+        assert "1 CRITICAL" in result
+        assert "no result" in result
+
+    @patch("junos_mcp.server._check_host_health")
+    @patch("junos_mcp.server.common.connect")
+    @patch("junos_mcp.server.get_pool")
+    def test_run_one_forwards_args_non_pool(self, mock_pool, mock_connect, mock_check, mock_config):
+        """The non-pool path forwards since_hours and route_baseline positionally."""
+        mock_pool.return_value = None
+        mock_dev = MagicMock()
+        mock_connect.return_value = {"ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_check.return_value = {"hostname": "rt1.example.jp", "anomalies": [], "error": None}
+        daily_brief(hostnames=["rt1.example.jp"], since_hours=24, route_baseline=152)
+        mock_check.assert_called_once_with("rt1.example.jp", mock_dev, 24, 152)
+
+    @patch("junos_mcp.server._check_host_health")
+    @patch("junos_mcp.server.get_pool")
+    def test_run_one_forwards_args_pool(self, mock_pool, mock_check, mock_config):
+        """The pool path forwards since_hours and route_baseline positionally."""
+        mock_dev = MagicMock()
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_dev
+        cm.__exit__.return_value = False
+        pool = MagicMock()
+        pool.acquire.return_value = cm
+        mock_pool.return_value = pool
+        mock_check.return_value = {"hostname": "rt1.example.jp", "anomalies": [], "error": None}
+        daily_brief(hostnames=["rt1.example.jp"], since_hours=24, route_baseline=152)
+        mock_check.assert_called_once_with("rt1.example.jp", mock_dev, 24, 152)
 
     def test_unknown_hostname(self, mock_config):
         """config.ini に存在しないホスト名はエラー"""

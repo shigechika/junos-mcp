@@ -55,6 +55,13 @@ _LAST_FLAPPED_RE = re.compile(
     r"Last flapped\s*:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
 )
 _SYSLOG_MAX_MATCHES = 10
+# RE <status> strings that indicate a genuine fault. A healthy backup RE may
+# report Present/Online/Backup (platform/version dependent), so page only on one
+# of these explicit fault states rather than on the mere absence of "OK".
+_RE_FAULT_STATES = {"fault", "fail", "failed", "offline", "absent", "empty", "testing"}
+# "inet.0: 152 destinations, ..." — the ^ anchor (re.MULTILINE) keeps
+# routing-instance tables ("VRF.inet.0:", "mgmt_junos.inet.0:") out.
+_ROUTE_INET0_RE = re.compile(r"^inet\.0:\s+(\d+) destinations", re.MULTILINE)
 
 mcp = FastMCP("junos-mcp")
 
@@ -1237,8 +1244,12 @@ def _iface_last_flapped(dev, iface: str) -> "datetime.datetime | None":
         return None
 
 
-def _check_host_health(hostname: str, dev, since_hours: int) -> dict:
-    """Run four health checks on a single connected device.
+def _check_host_health(hostname: str, dev, since_hours: int, route_baseline: int = 0) -> dict:
+    """Run health checks on a single connected device.
+
+    Checks: system & chassis alarms, IF_DOWN, syslog alert patterns, dual-RE
+    redundancy ([RE_FAULT]), and — when ``route_baseline`` > 0 — an inet.0
+    destination count that deviates from the expected value ([ROUTE_BASELINE]).
 
     Returns a dict with keys:
       - ``hostname``: str
@@ -1331,6 +1342,38 @@ def _check_host_health(hostname: str, dev, since_hours: int) -> dict:
     except Exception as exc:
         anomalies.append(f"[CHECK_ERROR] syslog: {exc}")
 
+    # 5. Routing-engine redundancy (dual-RE chassis): flag an explicit RE fault.
+    #    Scope: only the first chassis's flat RE0/RE1 facts are inspected; a
+    #    fault on a second Virtual Chassis member (carried in the re_info fact,
+    #    not RE0/RE1) is out of scope here.
+    try:
+        facts = dev.facts
+        if facts.get("2RE"):
+            for re_name in ("RE0", "RE1"):
+                re_info = facts.get(re_name) or {}
+                status = (re_info.get("status") or "").strip()
+                if status.lower() in _RE_FAULT_STATES:
+                    anomalies.append(f"[RE_FAULT] {re_name} status={status}")
+    except Exception as exc:
+        anomalies.append(f"[CHECK_ERROR] routing-engine: {exc}")
+
+    # 6. Route-summary baseline (only when route_baseline is set). Flags an
+    #    inet.0 destination count that deviates from the expected value — scope
+    #    with tags (e.g. tags=["main"], route_baseline=152), since full-table
+    #    routers carry far more routes than access routers.
+    if route_baseline:
+        try:
+            out = dev.cli("show route summary", warning=False)
+            m = _ROUTE_INET0_RE.search(out)
+            if m:
+                dest = int(m.group(1))
+                if dest != route_baseline:
+                    anomalies.append(
+                        f"[ROUTE_BASELINE] inet.0 {dest} destinations (baseline {route_baseline})"
+                    )
+        except Exception as exc:
+            anomalies.append(f"[CHECK_ERROR] route summary: {exc}")
+
     return {"hostname": hostname, "anomalies": anomalies, "error": None}
 
 
@@ -1339,6 +1382,7 @@ def daily_brief(
     hostnames: list[str] | None = None,
     tags: list[str] | None = None,
     since_hours: int = 18,
+    route_baseline: int = 0,
     max_workers: int = 10,
     config_path: str = "",
 ) -> str:
@@ -1352,6 +1396,11 @@ def daily_brief(
       unused ports and chronically-down ports are suppressed (loopback / mgmt /
       internal logical units are also excluded).
     - ``show log messages | last 200`` — alert patterns within ``since_hours``
+    - dual-RE redundancy — an explicit routing-engine fault is flagged ``[RE_FAULT]``
+    - ``route_baseline`` (optional) — when > 0, a device whose ``inet.0``
+      destination count differs from this value is flagged ``[ROUTE_BASELINE]``.
+      Scope with ``tags`` (e.g. ``tags=["main"], route_baseline=152``), since
+      full-table routers carry far more routes than access routers.
 
     Syslog patterns watched: BGP state change away from Established, STP port
     role change, OSPF neighbor down, ARP address conflict, IF_DOWN.
@@ -1388,7 +1437,7 @@ def daily_brief(
         if pool is not None:
             try:
                 with pool.acquire(hostname, norm_path) as dev:
-                    return _check_host_health(hostname, dev, since_hours)
+                    return _check_host_health(hostname, dev, since_hours, route_baseline)
             except PoolConnectionError as exc:
                 return {
                     "hostname": hostname,
@@ -1405,7 +1454,7 @@ def daily_brief(
             }
         dev = conn["dev"]
         try:
-            return _check_host_health(hostname, dev, since_hours)
+            return _check_host_health(hostname, dev, since_hours, route_baseline)
         finally:
             try:
                 dev.close()
@@ -1420,14 +1469,16 @@ def daily_brief(
 
     criticals, warnings, oks = [], [], []
     for hostname in targets:
-        row = results.get(
-            hostname,
-            {
+        row = results.get(hostname)
+        if not isinstance(row, dict):
+            # common.run_parallel stores a sentinel (int 1) for a worker that
+            # raised; coerce any non-dict so one bad host cannot crash the
+            # whole render at row.get(...) below.
+            row = {
                 "hostname": hostname,
                 "anomalies": ["[UNREACHABLE] no result"],
                 "error": "no result",
-            },
-        )
+            }
         if row.get("error"):
             criticals.append(row)
         elif row.get("anomalies"):
