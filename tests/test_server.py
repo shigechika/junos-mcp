@@ -3,7 +3,7 @@
 import argparse
 import configparser
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -1603,6 +1603,49 @@ class TestCheckHostHealth:
         result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
         assert not any("ROUTE_BASELINE" in a for a in result["anomalies"])
 
+    def test_re_fault_all_states_flagged(self):
+        """Every fault state (and a mixed-case value) is matched case-insensitively."""
+        for state in ["Fault", "Fail", "Failed", "Offline", "Absent", "Empty", "Testing", "OFFLINE"]:
+            dev = self._make_dev(
+                facts={"2RE": True, "RE0": {"status": "OK"}, "RE1": {"status": state}}
+            )
+            result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+            assert any(f"[RE_FAULT] RE1 status={state}" in a for a in result["anomalies"]), state
+
+    def test_re_check_error_isolated(self):
+        """A dev.facts read failure degrades to [CHECK_ERROR]; other checks still run."""
+        dev = self._make_dev()  # all CLI checks clean
+        type(dev).facts = PropertyMock(side_effect=RuntimeError("rpc fail"))
+        try:
+            result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        finally:
+            del type(dev).facts  # avoid leaking the property onto the MagicMock class
+        assert any("[CHECK_ERROR] routing-engine" in a for a in result["anomalies"])
+        assert not any("[ALARM]" in a or "[IF_DOWN]" in a for a in result["anomalies"])
+
+    def test_route_summary_check_error_isolated(self):
+        """A show route summary failure degrades to [CHECK_ERROR], not a crash."""
+        dev = self._make_dev()
+        canned = dev.cli.side_effect
+
+        def _cli(cmd, **kw):
+            if cmd == "show route summary":
+                raise RuntimeError("RpcTimeoutError")
+            return canned(cmd, **kw)
+
+        dev.cli.side_effect = _cli
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert any("[CHECK_ERROR] route summary" in a for a in result["anomalies"])
+
+    def test_route_baseline_no_inet0_line_no_op(self):
+        """route_baseline with no inet.0 line in the output is a clean no-op."""
+        dev = self._make_dev(
+            route_summary="inet6.0: 30 destinations, 40 routes (30 active, 0 holddown, 0 hidden)"
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18, route_baseline=152)
+        assert not any("ROUTE_BASELINE" in a for a in result["anomalies"])
+        assert not any("CHECK_ERROR" in a for a in result["anomalies"])
+
 
 # --- daily_brief ---
 
@@ -1662,6 +1705,33 @@ class TestDailyBrief:
         result = daily_brief(hostnames=["rt1.example.jp"])
         assert "1 CRITICAL" in result
         assert "no result" in result
+
+    @patch("junos_mcp.server._check_host_health")
+    @patch("junos_mcp.server.common.connect")
+    @patch("junos_mcp.server.get_pool")
+    def test_run_one_forwards_args_non_pool(self, mock_pool, mock_connect, mock_check, mock_config):
+        """The non-pool path forwards since_hours and route_baseline positionally."""
+        mock_pool.return_value = None
+        mock_dev = MagicMock()
+        mock_connect.return_value = {"ok": True, "dev": mock_dev, "error": None, "error_message": None}
+        mock_check.return_value = {"hostname": "rt1.example.jp", "anomalies": [], "error": None}
+        daily_brief(hostnames=["rt1.example.jp"], since_hours=24, route_baseline=152)
+        mock_check.assert_called_once_with("rt1.example.jp", mock_dev, 24, 152)
+
+    @patch("junos_mcp.server._check_host_health")
+    @patch("junos_mcp.server.get_pool")
+    def test_run_one_forwards_args_pool(self, mock_pool, mock_check, mock_config):
+        """The pool path forwards since_hours and route_baseline positionally."""
+        mock_dev = MagicMock()
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_dev
+        cm.__exit__.return_value = False
+        pool = MagicMock()
+        pool.acquire.return_value = cm
+        mock_pool.return_value = pool
+        mock_check.return_value = {"hostname": "rt1.example.jp", "anomalies": [], "error": None}
+        daily_brief(hostnames=["rt1.example.jp"], since_hours=24, route_baseline=152)
+        mock_check.assert_called_once_with("rt1.example.jp", mock_dev, 24, 152)
 
     def test_unknown_hostname(self, mock_config):
         """config.ini に存在しないホスト名はエラー"""

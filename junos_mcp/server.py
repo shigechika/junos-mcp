@@ -1343,6 +1343,9 @@ def _check_host_health(hostname: str, dev, since_hours: int, route_baseline: int
         anomalies.append(f"[CHECK_ERROR] syslog: {exc}")
 
     # 5. Routing-engine redundancy (dual-RE chassis): flag an explicit RE fault.
+    #    Scope: only the first chassis's flat RE0/RE1 facts are inspected; a
+    #    fault on a second Virtual Chassis member (carried in the re_info fact,
+    #    not RE0/RE1) is out of scope here.
     try:
         facts = dev.facts
         if facts.get("2RE"):
