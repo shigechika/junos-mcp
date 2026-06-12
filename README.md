@@ -72,7 +72,7 @@ junos-ops display layer for table rendering.
 
 | Tool | Description | Connection |
 |------|-------------|:----------:|
-| `daily_brief` | Morning health check across multiple devices in parallel — alarms, interface up/down, syslog alert patterns within a look-back window (`since_hours`, default 18 h), dual-RE faults (`[RE_FAULT]`), and an optional `inet.0` route-count baseline (`route_baseline`, e.g. `tags=["main"], route_baseline=152`). Returns a CRITICAL/WARNING/OK Markdown summary. | Yes |
+| `daily_brief` | Morning health check across multiple devices in parallel — alarms, interface up/down, syslog alert patterns within a look-back window (`since_hours`, default 18 h), dual-RE faults (`[RE_FAULT]`; skipped on SRX chassis clusters, whose facts misreport RE status — a failed cluster node surfaces via chassis alarms instead), and an optional `inet.0` route-count baseline (`route_baseline`, e.g. `tags=["main"], route_baseline=152`). Returns a CRITICAL/WARNING/OK Markdown summary. | Yes |
 
 ### Safety by Design
 
