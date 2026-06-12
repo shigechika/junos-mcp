@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `daily_brief`: two new per-host checks (PR
+  [#18](https://github.com/shigechika/junos-mcp/pull/18)) — `[RE_FAULT]`
+  flags an explicit routing-engine fault state on dual-RE chassis (a healthy
+  backup RE reporting Present/Backup does not page), and an optional
+  `route_baseline` parameter flags `[ROUTE_BASELINE]` when the `inet.0`
+  destination count deviates from the expected value (scope with tags, e.g.
+  `tags=["main"], route_baseline=152`; routing-instance tables are ignored).
+  Also hardens the result rendering against a crashed worker.
+
 ### Changed
 - `daily_brief`: the interface-down check now uses `show interfaces
   descriptions` instead of `show interfaces terse`. A physical interface is
@@ -20,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#15](https://github.com/shigechika/junos-mcp/issues/15).
 
 ### Fixed
+- `daily_brief`: skip the RE redundancy check on SRX chassis clusters. PyEZ
+  facts on a cluster report `2RE=True` with a self-contradictory RE0 status
+  of "Absent" while that RE is master and up (observed on an SRX4600
+  cluster), which raised a false `[RE_FAULT]` on a healthy cluster. A
+  genuinely failed cluster node still surfaces through the chassis-alarms
+  check. Closes [#19](https://github.com/shigechika/junos-mcp/issues/19).
 - `daily_brief`: exclude management interfaces (`fxp`/`me`/`vme`/`em`) and
   internal logical units (`.16386`, `.32767`/`.32768`) from `IF_DOWN`
   reporting, in addition to loopback. These are cosmetically "up down" and

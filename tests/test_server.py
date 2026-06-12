@@ -1598,13 +1598,23 @@ class TestCheckHostHealth:
         assert any("[RE_FAULT] RE1 status=Fault" in a for a in result["anomalies"])
 
     def test_srx_cluster_chassis_alarm_still_reported(self):
-        """On a cluster the RE check is skipped, but a real node failure still
-        surfaces through the chassis-alarms check."""
+        """On a cluster the RE check is skipped, but a node loss still
+        surfaces through the chassis-alarms check.
+
+        The fixture mirrors the real clustered ``show chassis alarms``
+        output: with the peer lost, only the survivor's node section appears
+        (no "No alarms currently active" string anywhere), so the check-2
+        gate passes and the alarm line is reported. This safety net covers
+        node loss only — while both nodes are up, a "No alarms" line in one
+        node's section suppresses the whole output (#21).
+        """
         dev = self._make_dev(
             chassis_alarms=(
+                "node0:\n"
+                "--------------------------------------------------------------------------\n"
                 "1 alarms currently active\n"
-                "Alarm time   Class  Description\n"
-                "2026-06-12 09:00:00 JST  Major  Cluster peer node1 is lost"
+                "Alarm time               Class  Description\n"
+                "2026-06-12 09:00:00 JST  Major  Loss of communication with peer node\n"
             ),
             facts={
                 "2RE": True,
@@ -1614,7 +1624,10 @@ class TestCheckHostHealth:
             },
         )
         result = _check_host_health("fw1.example.jp", dev, since_hours=18)
-        assert any("[CHASSIS_ALARM]" in a for a in result["anomalies"])
+        assert any(
+            "[CHASSIS_ALARM]" in a and "Loss of communication" in a
+            for a in result["anomalies"]
+        )
         assert not any("RE_FAULT" in a for a in result["anomalies"])
 
     # --- route-summary baseline ([ROUTE_BASELINE]) ---
