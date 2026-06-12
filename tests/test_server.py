@@ -1570,6 +1570,53 @@ class TestCheckHostHealth:
         result = _check_host_health("rt1.example.jp", dev, since_hours=18)
         assert not any("RE_FAULT" in a for a in result["anomalies"])
 
+    def test_srx_cluster_re_facts_not_flagged(self):
+        """SRX cluster facts misreport RE0 as Absent while it is master and up
+        (issue #19, observed on an SRX4600 cluster) — the RE check must skip."""
+        dev = self._make_dev(
+            facts={
+                "2RE": True,
+                "srx_cluster": True,
+                "RE0": {"mastership_state": "master", "status": "Absent"},
+                "RE1": None,
+            }
+        )
+        result = _check_host_health("fw1.example.jp", dev, since_hours=18)
+        assert not any("RE_FAULT" in a for a in result["anomalies"])
+
+    def test_srx_cluster_false_keeps_re_check_active(self):
+        """An explicit srx_cluster=False fact must not disable the RE check."""
+        dev = self._make_dev(
+            facts={
+                "2RE": True,
+                "srx_cluster": False,
+                "RE0": {"status": "OK"},
+                "RE1": {"status": "Fault"},
+            }
+        )
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert any("[RE_FAULT] RE1 status=Fault" in a for a in result["anomalies"])
+
+    def test_srx_cluster_chassis_alarm_still_reported(self):
+        """On a cluster the RE check is skipped, but a real node failure still
+        surfaces through the chassis-alarms check."""
+        dev = self._make_dev(
+            chassis_alarms=(
+                "1 alarms currently active\n"
+                "Alarm time   Class  Description\n"
+                "2026-06-12 09:00:00 JST  Major  Cluster peer node1 is lost"
+            ),
+            facts={
+                "2RE": True,
+                "srx_cluster": True,
+                "RE0": {"mastership_state": "master", "status": "Absent"},
+                "RE1": None,
+            },
+        )
+        result = _check_host_health("fw1.example.jp", dev, since_hours=18)
+        assert any("[CHASSIS_ALARM]" in a for a in result["anomalies"])
+        assert not any("RE_FAULT" in a for a in result["anomalies"])
+
     # --- route-summary baseline ([ROUTE_BASELINE]) ---
 
     def test_route_baseline_deviation_flagged(self):

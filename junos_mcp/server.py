@@ -1248,7 +1248,8 @@ def _check_host_health(hostname: str, dev, since_hours: int, route_baseline: int
     """Run health checks on a single connected device.
 
     Checks: system & chassis alarms, IF_DOWN, syslog alert patterns, dual-RE
-    redundancy ([RE_FAULT]), and — when ``route_baseline`` > 0 — an inet.0
+    redundancy ([RE_FAULT]; skipped on SRX chassis clusters whose facts
+    misreport RE status), and — when ``route_baseline`` > 0 — an inet.0
     destination count that deviates from the expected value ([ROUTE_BASELINE]).
 
     Returns a dict with keys:
@@ -1345,10 +1346,14 @@ def _check_host_health(hostname: str, dev, since_hours: int, route_baseline: int
     # 5. Routing-engine redundancy (dual-RE chassis): flag an explicit RE fault.
     #    Scope: only the first chassis's flat RE0/RE1 facts are inspected; a
     #    fault on a second Virtual Chassis member (carried in the re_info fact,
-    #    not RE0/RE1) is out of scope here.
+    #    not RE0/RE1) is out of scope here.  SRX chassis clusters are excluded:
+    #    PyEZ facts on a cluster can report RE0 status "Absent" while that RE
+    #    is master and up (issue #19, observed on an SRX4600 cluster), so
+    #    RE0/RE1 facts are not trustworthy there; a genuinely failed node
+    #    raises chassis alarms on the survivor, which check 2 catches.
     try:
         facts = dev.facts
-        if facts.get("2RE"):
+        if facts.get("2RE") and not facts.get("srx_cluster"):
             for re_name in ("RE0", "RE1"):
                 re_info = facts.get(re_name) or {}
                 status = (re_info.get("status") or "").strip()
@@ -1396,7 +1401,9 @@ def daily_brief(
       unused ports and chronically-down ports are suppressed (loopback / mgmt /
       internal logical units are also excluded).
     - ``show log messages | last 200`` — alert patterns within ``since_hours``
-    - dual-RE redundancy — an explicit routing-engine fault is flagged ``[RE_FAULT]``
+    - dual-RE redundancy — an explicit routing-engine fault is flagged
+      ``[RE_FAULT]`` (skipped on SRX chassis clusters, whose facts misreport
+      RE status; a failed cluster node raises chassis alarms instead)
     - ``route_baseline`` (optional) — when > 0, a device whose ``inet.0``
       destination count differs from this value is flagged ``[ROUTE_BASELINE]``.
       Scope with ``tags`` (e.g. ``tags=["main"], route_baseline=152``), since
