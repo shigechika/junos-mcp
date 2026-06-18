@@ -20,6 +20,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | `get_device_facts` | Get basic device information (model, hostname, serial, version) | Yes |
 | `get_version` | Get JUNOS version with upgrade status | Yes |
 | `get_router_list` | List routers from config.ini (optionally filtered by tags) | No |
+| `health_check` | Report server version + config status (router count, distinct tags). Lightweight; does NOT connect to any device | No |
 
 ### CLI Command Execution
 

@@ -35,6 +35,7 @@ from junos_mcp.server import (
     get_package_info,
     get_router_list,
     get_version,
+    health_check,
     list_remote_files,
     run_show_command,
     run_show_command_batch,
@@ -539,6 +540,80 @@ class TestGetRouterList:
         assert "rt1.example.jp" in result
         assert "rt2.example.jp" in result
         assert "(2)" in result
+
+
+# --- health_check ---
+
+
+class TestHealthCheck:
+    def _required_keys(self):
+        return {
+            "status",
+            "service",
+            "version",
+            "config_path",
+            "router_count",
+            "tags",
+            "config",
+        }
+
+    def test_healthy_when_config_loads(self, mock_config):
+        """config が読めるとき healthy で router_count > 0、version あり"""
+        result = health_check()
+        # 固定シェイプ: 必須キーは常に存在する
+        assert self._required_keys() <= set(result)
+        assert result["status"] == "healthy"
+        assert result["service"] == "junos-mcp"
+        assert result["config"] == "ok"
+        # version はパッケージから取得され空でない
+        assert result["version"]
+        assert result["router_count"] == 1
+        assert result["router_count"] > 0
+        assert result["tags"] == []
+        assert "detail" not in result
+
+    def test_collects_sorted_distinct_tags(self):
+        """複数ホストの tags を重複排除してソート済みで返す"""
+        cfg = configparser.ConfigParser(allow_no_value=True)
+        cfg.read_dict(
+            {
+                "rt1.example.jp": {"host": "192.0.2.1", "tags": "core, tokyo"},
+                "rt2.example.jp": {"host": "192.0.2.2", "tags": "tokyo, backup"},
+            }
+        )
+        common.config = cfg
+        common.args = argparse.Namespace(config="config.ini")
+        result = health_check()
+        assert result["status"] == "healthy"
+        assert result["router_count"] == 2
+        assert result["tags"] == ["backup", "core", "tokyo"]
+
+    def test_error_when_config_missing(self):
+        """config が存在しない場合 status=error / config=missing"""
+        # _ensure_config がエラー文字列を返し、ファイルも存在しないケース
+        with patch(
+            "junos_mcp.server._ensure_config",
+            return_value="Config error: file not found",
+        ):
+            result = health_check(config_path="/nonexistent/path/config.ini")
+        assert self._required_keys() <= set(result)
+        assert result["status"] == "error"
+        assert result["config"] == "missing"
+        assert result["router_count"] == 0
+        assert "detail" in result
+        # version は失敗時でも常に存在する
+        assert result["version"]
+
+    def test_never_raises_on_unexpected_error(self, mock_config):
+        """予期せぬ例外でも raise せず status=error を返す"""
+        with patch(
+            "junos_mcp.server._ensure_config",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = health_check()
+        assert result["status"] == "error"
+        assert result["config"] == "error"
+        assert "boom" in result["detail"]
 
 
 # --- run_show_commands ---
