@@ -1,0 +1,32 @@
+name: release-please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5  # v4
+        with:
+          # Use a fine-grained PAT so that tags and releases created by
+          # release-please trigger the downstream `release` workflow
+          # (on: push tags v*). Tokens attributed to GITHUB_TOKEN cannot
+          # fire other workflow runs (GitHub's recursion-prevention rule),
+          # which would leave the PyPI / MCP Registry pipeline dormant on
+          # every release. The PAT's author is a real user, so the tag push
+          # propagates normally.
+          #
+          # The secret needs Contents + Pull requests + Metadata at minimum.
+          # Falls back to GITHUB_TOKEN when the secret is unset, which keeps
+          # PR CI working on forks (but then the release tag must be pushed
+          # manually to trigger publishing).
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
