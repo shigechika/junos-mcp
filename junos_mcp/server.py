@@ -1522,6 +1522,68 @@ def daily_brief(
     return "\n".join(lines)
 
 
+@mcp.tool()
+def health_check(config_path: str = "") -> dict:
+    """Report server version and config status — without connecting to any device.
+
+    Call this at session start (or after a tool-call timeout) to confirm the MCP
+    is up, see which version is running, and verify that config.ini loads and how
+    many routers it defines. Lightweight by design: junos-mcp fans out to many
+    Juniper devices, so this check ONLY loads config.ini and counts hosts — it
+    opens NO NETCONF/SSH connection to any device.
+
+    Always returns the same keys: ``status`` (healthy / degraded / error),
+    ``service``, ``version``, ``config_path`` (the resolved config.ini path it
+    would use), ``router_count`` (number of host sections in config.ini),
+    ``tags`` (sorted list of distinct tags across configured hosts), and
+    ``config`` (ok / error / missing). On a degraded or error result, ``detail``
+    carries the reason.
+
+    Args:
+        config_path: Path to config.ini (empty string uses default search).
+    """
+    from junos_mcp import __version__
+
+    # Fixed shape: every key is present regardless of outcome, so callers can
+    # read it uniformly and rely on `status` to judge health.
+    result: dict = {
+        "status": "healthy",
+        "service": "junos-mcp",
+        "version": __version__,
+        "config_path": _resolve_config_path(config_path),
+        "router_count": 0,
+        "tags": [],
+        "config": "ok",
+    }
+
+    # Loading the config is purely local (no device round trip). A genuine
+    # parse/missing error degrades the server; anything unexpected is caught so
+    # the health check never raises.
+    try:
+        err = _ensure_config(config_path)
+        if err:
+            # _init_globals returns a "Config error: ..." string on failure;
+            # treat a missing file as "missing", any other parse failure as "error".
+            cfg_path = result["config_path"]
+            result["config"] = "missing" if not os.path.exists(cfg_path) else "error"
+            result["status"] = "error"
+            result["detail"] = err
+            return result
+
+        sections = common.config.sections()
+        result["router_count"] = len(sections)
+        tags: set[str] = set()
+        for section in sections:
+            tags |= common._get_host_tags(section)
+        result["tags"] = sorted(tags)
+    except Exception as e:  # noqa: BLE001 — surface config errors, don't sink the check
+        result["status"] = "error"
+        result["config"] = "error"
+        result["detail"] = str(e)
+
+    return result
+
+
 if __name__ == "__main__":
     import argparse as _ap
 
