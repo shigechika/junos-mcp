@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/shigechika/junos-mcp/compare/v0.14.0...v0.15.0) (2026-06-18)
+
+
+### Features
+
+* **daily_brief:** add RE-fault and route-baseline checks + crash isolation ([#18](https://github.com/shigechika/junos-mcp/issues/18)) ([e7fe7f5](https://github.com/shigechika/junos-mcp/commit/e7fe7f5451f55c3809c2aa26ecb79125717c8e48))
+* **health_check:** add lightweight device-non-connecting health check tool ([#22](https://github.com/shigechika/junos-mcp/issues/22)) ([ea9520c](https://github.com/shigechika/junos-mcp/commit/ea9520cc6365963697fe0b22bac9af21053655b3))
+
+
+### Bug Fixes
+
+* **daily_brief:** exclude mgmt and internal logical units from IF_DOWN (closes [#13](https://github.com/shigechika/junos-mcp/issues/13)) ([#14](https://github.com/shigechika/junos-mcp/issues/14)) ([243c3ac](https://github.com/shigechika/junos-mcp/commit/243c3ac48fb870fee0da5e1e0a93d0416dcc202c))
+* **daily_brief:** flag IF_DOWN only for described ports down within since_hours ([#16](https://github.com/shigechika/junos-mcp/issues/16)) ([407d066](https://github.com/shigechika/junos-mcp/commit/407d0665bd51359b6421746b147729f0f8b6d27f)), closes [#15](https://github.com/shigechika/junos-mcp/issues/15)
+* **daily_brief:** skip RE redundancy check on SRX chassis clusters ([#20](https://github.com/shigechika/junos-mcp/issues/20)) ([d8600c4](https://github.com/shigechika/junos-mcp/commit/d8600c42ee7d8b75f68de28bfeb2d287b493af4f))
+
 ## [Unreleased]
 
 ### Added
