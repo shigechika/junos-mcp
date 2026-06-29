@@ -1705,6 +1705,79 @@ class TestCheckHostHealth:
         )
         assert not any("RE_FAULT" in a for a in result["anomalies"])
 
+    def test_sectioned_one_node_no_alarms_other_node_reported(self):
+        """node0 "No alarms" must NOT suppress node1's real Major alarm (#21).
+
+        Both nodes alive: node0's section says "No alarms currently active"
+        while node1 carries a genuine Major PEM alarm. The old whole-output
+        ``"No alarms" not in out`` gate dropped the entire output here — a
+        silent failure. The line-level filter must surface node1's alarm.
+        """
+        dev = self._make_dev(
+            chassis_alarms=(
+                "node0:\n"
+                "--------------------------------------------------------------------------\n"
+                "No alarms currently active\n"
+                "\n"
+                "node1:\n"
+                "--------------------------------------------------------------------------\n"
+                "1 alarms currently active\n"
+                "Alarm time               Class  Description\n"
+                "2026-06-11 23:12:01 JST  Major  PEM 1 Not OK\n"
+            ),
+        )
+        result = _check_host_health("fw1.example.jp", dev, since_hours=18)
+        chassis = [a for a in result["anomalies"] if "[CHASSIS_ALARM]" in a]
+        assert any("PEM 1 Not OK" in a for a in chassis)
+
+    def test_sectioned_alarm_filters_noise_lines(self):
+        """node headers, separators, the column header and the counter line
+        must never appear as [CHASSIS_ALARM] entries (#21 secondary nit)."""
+        dev = self._make_dev(
+            chassis_alarms=(
+                "node0:\n"
+                "--------------------------------------------------------------------------\n"
+                "No alarms currently active\n"
+                "\n"
+                "node1:\n"
+                "--------------------------------------------------------------------------\n"
+                "1 alarms currently active\n"
+                "Alarm time               Class  Description\n"
+                "2026-06-11 23:12:01 JST  Major  PEM 1 Not OK\n"
+            ),
+        )
+        result = _check_host_health("fw1.example.jp", dev, since_hours=18)
+        chassis = [a for a in result["anomalies"] if "[CHASSIS_ALARM]" in a]
+        # Exactly the one real alarm row survives the filter.
+        assert len(chassis) == 1 and "PEM 1 Not OK" in chassis[0]
+        joined = " ".join(chassis)
+        assert "node0" not in joined and "node1" not in joined
+        assert "----" not in joined
+        assert "Alarm time" not in joined
+        assert "currently active" not in joined
+
+    def test_sectioned_all_nodes_clean_no_anomaly(self):
+        """A cluster where every node reports "No alarms" yields no anomaly."""
+        dev = self._make_dev(
+            chassis_alarms=(
+                "node0:\n"
+                "--------------------------------------------------------------------------\n"
+                "No alarms currently active\n"
+                "\n"
+                "node1:\n"
+                "--------------------------------------------------------------------------\n"
+                "No alarms currently active\n"
+            ),
+        )
+        result = _check_host_health("fw1.example.jp", dev, since_hours=18)
+        assert not any("[CHASSIS_ALARM]" in a for a in result["anomalies"])
+
+    def test_single_chassis_no_alarms_clean(self):
+        """Plain single-chassis "No alarms currently active" → no anomaly."""
+        dev = self._make_dev(chassis_alarms="No alarms currently active")
+        result = _check_host_health("rt1.example.jp", dev, since_hours=18)
+        assert not any("[CHASSIS_ALARM]" in a for a in result["anomalies"])
+
     # --- route-summary baseline ([ROUTE_BASELINE]) ---
 
     def test_route_baseline_deviation_flagged(self):

@@ -1244,6 +1244,43 @@ def _iface_last_flapped(dev, iface: str) -> "datetime.datetime | None":
         return None
 
 
+def _alarm_lines(out: str) -> list[str]:
+    """Extract real alarm rows from ``show system/chassis alarms`` output.
+
+    Junos sections multi-node output (SRX chassis cluster, Virtual Chassis)
+    per node, so a whole-output ``"No alarms" not in out`` gate lets one
+    node's "No alarms currently active" line suppress another node's real
+    alarm — a silent failure on a partially-degraded cluster (issue #21).
+
+    Filter line by line instead so single-chassis, cluster, and VC output
+    are handled uniformly. The following are dropped as noise; whatever
+    remains is a genuine alarm row:
+
+      - the per-node "No alarms currently active" line,
+      - ``nodeN:`` section headers,
+      - ``----`` separator rules,
+      - the "Alarm time ..." column header,
+      - the "N alarms currently active" counter line.
+    """
+    lines: list[str] = []
+    for raw in out.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if "no alarms currently active" in s.lower():
+            continue
+        if re.match(r"node\d+:?$", s, re.IGNORECASE):
+            continue
+        if re.match(r"-{3,}$", s):
+            continue
+        if s.lower().startswith("alarm time"):
+            continue
+        if re.match(r"\d+ alarms? currently active", s):
+            continue
+        lines.append(s)
+    return lines
+
+
 def _check_host_health(hostname: str, dev, since_hours: int, route_baseline: int = 0) -> dict:
     """Run health checks on a single connected device.
 
@@ -1263,32 +1300,16 @@ def _check_host_health(hostname: str, dev, since_hours: int, route_baseline: int
     # 1. System alarms
     try:
         out = dev.cli("show system alarms", warning=False)
-        if "No alarms" not in out:
-            lines = [
-                ln.strip()
-                for ln in out.splitlines()
-                if ln.strip()
-                and not ln.strip().lower().startswith("alarm time")
-                and not re.match(r"\d+ alarms? currently active", ln.strip())
-            ]
-            for ln in lines[:5]:
-                anomalies.append(f"[ALARM] {ln[:100]}")
+        for ln in _alarm_lines(out)[:5]:
+            anomalies.append(f"[ALARM] {ln[:100]}")
     except Exception as exc:
         anomalies.append(f"[CHECK_ERROR] system alarms: {exc}")
 
     # 2. Chassis alarms
     try:
         out = dev.cli("show chassis alarms", warning=False)
-        if "No alarms" not in out:
-            lines = [
-                ln.strip()
-                for ln in out.splitlines()
-                if ln.strip()
-                and not ln.strip().lower().startswith("alarm time")
-                and not re.match(r"\d+ alarms? currently active", ln.strip())
-            ]
-            for ln in lines[:5]:
-                anomalies.append(f"[CHASSIS_ALARM] {ln[:100]}")
+        for ln in _alarm_lines(out)[:5]:
+            anomalies.append(f"[CHASSIS_ALARM] {ln[:100]}")
     except Exception as exc:
         anomalies.append(f"[CHECK_ERROR] chassis alarms: {exc}")
 
