@@ -158,7 +158,7 @@ run_show_command_batch(
 | `"json"` | NETCONF JSON 出力 — デバイスが構造化された dict を返す |
 | `"xml"` | NETCONF XML 出力 — デバイスが整形済み XML を返す |
 
-**注意:** CLI のパイプ段（`| match`、`| last`、`| count` 等）は `output_format` に関わらず常に無視されます。PyEZ の `Device.cli()` は NETCONF RPC 経由でコマンドを送信するため、JUNOS 側でパイプ処理が行われません。パイプなしでコマンドを実行し、クライアント側でフィルタしてください。単一コマンドであれば、`run_show_command_batch`（後述）の `grep_pattern` 引数がサーバーサイド風のフィルタを提供します——単一ホストに対しても `hostnames` を1要素のリストにして渡せば使えます——ただし常にプレーンテキスト出力を内部で取得するため（`output_format="json"`/`"xml"` とは併用不可）、かつ一度に1コマンドしか受け付けないため、`run_show_commands` の複数コマンドのケースの代わりにはなりません。
+**注意:** CLI のパイプ（`| match`、`| last`、`| count` 等）は `output_format` に関わらず常に無視されます。PyEZ の `Device.cli()` は NETCONF RPC 経由でコマンドを送信するため、JUNOS 側でパイプ処理が行われません。パイプなしでコマンドを実行し、クライアント側でフィルタしてください。単一コマンドであれば、`run_show_command_batch`（後述）の `grep_pattern` 引数がサーバーサイド風のフィルタを提供します——単一ホストに対しても `hostnames` を1要素のリストにして渡せば使えます——ただし常にプレーンテキスト出力を内部で取得するため（`output_format="json"`/`"xml"` とは併用不可）、かつ一度に1コマンドしか受け付けないため、`run_show_commands` の複数コマンドのケースの代わりにはなりません。
 
 ```python
 # 構造化された BGP サマリーデータを取得
