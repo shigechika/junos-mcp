@@ -225,8 +225,12 @@ def run_show_command(
         hostname: Target device hostname (must exist in config.ini)
         command: CLI command to execute (e.g., "show bgp summary")
         output_format: Output format — "text" (default), "json", or "xml".
-            Note: JunOS drops pipe stages (| match, | last, | count) under
-            json/xml; use "text" when pipe filtering is needed.
+            Note: pipe stages (| match, | last, | count, etc.) are silently
+            dropped regardless of output_format — PyEZ's Device.cli() sends
+            the command over NETCONF RPC, which JunOS does not pipe-process.
+            Run the command without pipes; for line filtering, use
+            run_show_command_batch's grep_pattern argument instead (works
+            for a single host too — pass a one-element hostnames list).
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
@@ -253,8 +257,12 @@ def run_show_commands(
         hostname: Target device hostname (must exist in config.ini)
         commands: List of CLI commands to execute
         output_format: Output format — "text" (default), "json", or "xml".
-            Note: JunOS drops pipe stages (| match, | last, | count) under
-            json/xml; use "text" when pipe filtering is needed.
+            Note: pipe stages (| match, | last, | count, etc.) are silently
+            dropped regardless of output_format — PyEZ's Device.cli() sends
+            the command over NETCONF RPC, which JunOS does not pipe-process.
+            Run the command without pipes; for line filtering, use
+            run_show_command_batch's grep_pattern argument instead (works
+            for a single host too — pass a one-element hostnames list).
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
