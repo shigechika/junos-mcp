@@ -225,8 +225,15 @@ def run_show_command(
         hostname: Target device hostname (must exist in config.ini)
         command: CLI command to execute (e.g., "show bgp summary")
         output_format: Output format — "text" (default), "json", or "xml".
-            Note: JunOS drops pipe stages (| match, | last, | count) under
-            json/xml; use "text" when pipe filtering is needed.
+            Note: pipe stages (| match, | last, | count, etc.) are silently
+            dropped regardless of output_format — PyEZ's Device.cli() sends
+            the command over NETCONF RPC, which JunOS does not pipe-process.
+            Run the command without pipes; for line filtering, use
+            run_show_command_batch's grep_pattern argument instead (works
+            for a single host too — pass a one-element hostnames list). That
+            workaround always fetches text output internally, so it cannot
+            be combined with output_format="json"/"xml" — for structured
+            output you must filter the result client-side instead.
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
@@ -253,8 +260,14 @@ def run_show_commands(
         hostname: Target device hostname (must exist in config.ini)
         commands: List of CLI commands to execute
         output_format: Output format — "text" (default), "json", or "xml".
-            Note: JunOS drops pipe stages (| match, | last, | count) under
-            json/xml; use "text" when pipe filtering is needed.
+            Note: pipe stages (| match, | last, | count, etc.) are silently
+            dropped regardless of output_format — PyEZ's Device.cli() sends
+            the command over NETCONF RPC, which JunOS does not pipe-process.
+            Run commands without pipes and filter client-side.
+            run_show_command_batch's grep_pattern argument offers
+            server-side-style filtering, but it only accepts one command at
+            a time — it does not cover this tool's multi-command case, so
+            it is not a drop-in workaround here.
         config_path: Path to config.ini (empty string uses default search)
     """
     def _operation(hostname, dev):
@@ -321,7 +334,11 @@ def run_show_command_batch(
             matching the pattern (via ``re.search``) are kept from each
             host's output. Header lines (starting with ``#``) are always
             preserved. Hosts with no matching lines show ``(no match)``.
-            Reduces large batch outputs to the essential lines.
+            Reduces large batch outputs to the essential lines. This tool
+            always fetches text output internally (there is no
+            ``output_format`` parameter here) — ``grep_pattern`` filters
+            plain-text lines and cannot be combined with structured
+            JSON/XML output.
         max_workers: Maximum parallel threads (default 5)
         config_path: Path to config.ini (empty string uses default search)
     """

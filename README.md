@@ -168,8 +168,15 @@ See the [junos-ops tag documentation](https://github.com/shigechika/junos-ops#ta
 | `"json"` | NETCONF JSON output — device returns a structured dict |
 | `"xml"` | NETCONF XML output — device returns pretty-printed XML |
 
-**Note:** JunOS drops CLI pipe stages (`| match`, `| last`, `| count`) under json/xml output.
-Use `"text"` when pipe filtering is needed.
+**Note:** CLI pipe stages (`| match`, `| last`, `| count`, etc.) are silently dropped
+regardless of `output_format`. PyEZ's `Device.cli()` sends the command over NETCONF
+RPC, which JunOS does not pipe-process. Run the command without pipes and filter
+client-side instead. For a single command, `run_show_command_batch`'s `grep_pattern`
+argument (see below) offers server-side-style filtering — even against a single
+host, by passing a one-element `hostnames` list — but it always fetches plain-text
+output internally (it cannot be combined with `output_format="json"`/`"xml"`), and
+it only accepts one command at a time, so it isn't a drop-in workaround for
+`run_show_commands`' multi-command case.
 
 ```python
 # Get structured BGP summary data

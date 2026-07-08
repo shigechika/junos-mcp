@@ -148,6 +148,23 @@ run_show_command_batch(
 
 `config.ini` へのタグ付け方法と CLI 側の同文法については [junos-ops のタグドキュメント](https://github.com/shigechika/junos-ops#tag-based-host-filtering) を参照してください。
 
+## 構造化出力形式
+
+`run_show_command` と `run_show_commands` はオプションの `output_format` 引数を受け付けます:
+
+| 値 | 説明 |
+|-----|------|
+| `"text"` | デフォルト。プレーンテキストの CLI 出力（コマンドを直接入力した場合と同じ） |
+| `"json"` | NETCONF JSON 出力 — デバイスが構造化された dict を返す |
+| `"xml"` | NETCONF XML 出力 — デバイスが整形済み XML を返す |
+
+**注意:** CLI のパイプ段（`| match`、`| last`、`| count` 等）は `output_format` に関わらず常に無視されます。PyEZ の `Device.cli()` は NETCONF RPC 経由でコマンドを送信するため、JUNOS 側でパイプ処理が行われません。パイプなしでコマンドを実行し、クライアント側でフィルタしてください。単一コマンドであれば、`run_show_command_batch`（後述）の `grep_pattern` 引数がサーバーサイド風のフィルタを提供します——単一ホストに対しても `hostnames` を1要素のリストにして渡せば使えます——ただし常にプレーンテキスト出力を内部で取得するため（`output_format="json"`/`"xml"` とは併用不可）、かつ一度に1コマンドしか受け付けないため、`run_show_commands` の複数コマンドのケースの代わりにはなりません。
+
+```python
+# 構造化された BGP サマリーデータを取得
+run_show_command("router-a", "show bgp summary", output_format="json")
+```
+
 ## サーバーサイド出力フィルタ
 
 `run_show_command_batch` はオプションの `grep_pattern` 引数（Python `re` パターン）を受け付けます。指定すると、各ホストの出力からパターンにマッチした行のみが残ります。`#` で始まるヘッダー行は常に保持されます。マッチする行がないホストには `(no match)` が表示されます。

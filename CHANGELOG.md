@@ -111,9 +111,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for each connected host. Requires junos-ops ≥ 0.20.0.
 - `run_show_command` / `run_show_commands`: new `output_format` parameter
   (`"text"` default / `"json"` / `"xml"`). `json` and `xml` request
-  structured output from the device via NETCONF. Note: JunOS drops CLI
-  pipe stages (`| match`, `| last`, `| count`) under json/xml — use
-  `"text"` when pipe filtering is needed. Implemented via
+  structured output from the device via NETCONF. Note: CLI pipe stages
+  (`| match`, `| last`, `| count`) are dropped regardless of
+  `output_format` — PyEZ's `Device.cli()` sends the command over NETCONF
+  RPC, which JunOS does not pipe-process. Implemented via
   `junos_ops.show.run_cli()` / `run_cli_batch()`. Requires junos-ops ≥ 0.18.0.
 
 ### Changed
