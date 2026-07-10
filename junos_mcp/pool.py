@@ -13,11 +13,17 @@ JUNOS_MCP_POOL_IDLE
     Idle timeout in seconds (float, default ``60``).  A pooled connection
     unused for longer than this is closed and reopened on the next acquire.
     Set to ``0`` to disable idle eviction.
+JUNOS_MCP_POOL_CONNECT_ATTEMPTS
+    Number of connect attempts on a transient failure (int, default ``2``
+    = one retry).  Set to ``1`` to disable retrying.
+JUNOS_MCP_POOL_CONNECT_DELAY
+    Delay in seconds between connect attempts (float, default ``1.0``).
 """
 
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import threading
 import time
@@ -26,7 +32,20 @@ from contextlib import contextmanager
 
 from junos_ops import common
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_IDLE: float = 60.0
+_DEFAULT_CONNECT_ATTEMPTS: int = 2  # one retry
+_DEFAULT_CONNECT_RETRY_DELAY: float = 1.0
+
+# Connect failures worth a retry: a device that is reachable but momentarily
+# slow.  ``ConnectError`` is the class PyEZ raises for a bare SSH-layer failure
+# such as an "Error reading SSH protocol banner" banner-read timeout;
+# ``ConnectTimeoutError`` covers a slow NETCONF handshake.  Permanent failures
+# — ``ConnectAuthError`` (bad credentials; retrying risks account lockout),
+# ``ConnectRefusedError`` (NETCONF disabled) and ``ConnectUnknownHostError``
+# (name resolution) — are deliberately excluded so they fail fast.
+_RETRYABLE_CONNECT_ERRORS = frozenset({"ConnectError", "ConnectTimeoutError"})
 
 # Module-level singleton.  Set to None to force re-creation (e.g. in tests).
 _pool: ConnectionPool | None = None
@@ -55,8 +74,15 @@ class ConnectionPool:
     for the full duration of the operation (checkout to checkin).
     """
 
-    def __init__(self, idle_timeout: float = _DEFAULT_IDLE) -> None:
+    def __init__(
+        self,
+        idle_timeout: float = _DEFAULT_IDLE,
+        connect_attempts: int = _DEFAULT_CONNECT_ATTEMPTS,
+        connect_retry_delay: float = _DEFAULT_CONNECT_RETRY_DELAY,
+    ) -> None:
         self._idle_timeout = idle_timeout
+        self._connect_attempts = max(1, connect_attempts)
+        self._connect_retry_delay = connect_retry_delay
         self._lock = threading.Lock()  # guards _entries dict
         self._entries: dict[tuple[str, str], _Entry] = {}
 
@@ -112,7 +138,7 @@ class ConnectionPool:
                 self._close_dev(entry)
 
         if entry.dev is None:
-            conn = common.connect(hostname)
+            conn = self._connect(hostname)
             if not conn["ok"]:
                 msg = conn.get("error_message") or conn.get("error") or "Connection failed"
                 raise PoolConnectionError(msg)
@@ -120,6 +146,49 @@ class ConnectionPool:
             entry.last_used = time.monotonic()
 
         return entry.dev
+
+    def _connect(self, hostname: str) -> dict:
+        """Open a connection via junos-ops, retrying transient failures.
+
+        A transient connect failure — an SSH banner-read timeout (surfaced by
+        PyEZ as ``ConnectError``) or a slow NETCONF handshake
+        (``ConnectTimeoutError``) — means the device is reachable but
+        momentarily slow, so it is worth up to ``connect_attempts`` tries with
+        ``connect_retry_delay`` seconds between them.  Errors outside
+        :data:`_RETRYABLE_CONNECT_ERRORS` (auth, NETCONF-refused, unknown host)
+        are permanent and return immediately.
+
+        Called with the per-host ``entry.lock`` held, so any retry delay only
+        blocks concurrent callers for this same host, not other hosts.
+
+        :param hostname: config section name (host identifier).
+        :return: the junos-ops ``connect()`` result dict (last attempt if all
+            attempts failed).
+        """
+        for attempt in range(1, self._connect_attempts + 1):
+            conn = common.connect(hostname)
+            if conn["ok"]:
+                if attempt > 1:
+                    logger.info(
+                        "connect to %s recovered on attempt %d/%d",
+                        hostname,
+                        attempt,
+                        self._connect_attempts,
+                    )
+                return conn
+            if conn.get("error") not in _RETRYABLE_CONNECT_ERRORS:
+                return conn  # permanent failure — fail fast, no retry
+            if attempt < self._connect_attempts:
+                logger.warning(
+                    "transient connect failure for %s (%s); retry %d/%d",
+                    hostname,
+                    conn.get("error"),
+                    attempt,
+                    self._connect_attempts - 1,
+                )
+                if self._connect_retry_delay > 0:
+                    time.sleep(self._connect_retry_delay)
+        return conn
 
     @staticmethod
     def _close_dev(entry: _Entry) -> None:
@@ -143,6 +212,20 @@ def get_pool() -> ConnectionPool | None:
         with _pool_init_lock:
             if _pool is None:
                 idle = float(os.environ.get("JUNOS_MCP_POOL_IDLE", str(_DEFAULT_IDLE)))
-                _pool = ConnectionPool(idle_timeout=idle)
+                attempts = int(
+                    os.environ.get(
+                        "JUNOS_MCP_POOL_CONNECT_ATTEMPTS", str(_DEFAULT_CONNECT_ATTEMPTS)
+                    )
+                )
+                delay = float(
+                    os.environ.get(
+                        "JUNOS_MCP_POOL_CONNECT_DELAY", str(_DEFAULT_CONNECT_RETRY_DELAY)
+                    )
+                )
+                _pool = ConnectionPool(
+                    idle_timeout=idle,
+                    connect_attempts=attempts,
+                    connect_retry_delay=delay,
+                )
                 atexit.register(_pool.close_all)
     return _pool
