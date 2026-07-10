@@ -54,8 +54,12 @@ def reset_globals():
 
 
 @pytest.fixture(autouse=True)
-def reset_pool():
+def reset_pool(monkeypatch):
     """テスト間でプールキャッシュが干渉しないようシングルトンをリセット"""
+    # Connect retry is exercised in test_pool.py; disable it here so the
+    # existing connect-failure tests don't incur real retry sleeps or a
+    # second connect attempt.
+    monkeypatch.setenv("JUNOS_MCP_POOL_CONNECT_ATTEMPTS", "1")
     pool_module._pool = None
     yield
     pool_module._pool = None
