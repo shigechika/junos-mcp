@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.3](https://github.com/shigechika/junos-mcp/compare/v0.15.2...v0.15.3) (2026-07-10)
+
+
+### Bug Fixes
+
+* **pool:** retry transient NETCONF connect failures once ([#37](https://github.com/shigechika/junos-mcp/issues/37)) ([70647be](https://github.com/shigechika/junos-mcp/commit/70647be3b49b7cc7fd5c97b7b177e734c51c809f))
+
+
+### Documentation
+
+* correct pipe-filtering note in run_show_command docstrings ([#30](https://github.com/shigechika/junos-mcp/issues/30)) ([19404e1](https://github.com/shigechika/junos-mcp/commit/19404e1156d2c245641f92de6cabb9de6e7fc456))
+* **ja:** reword "パイプ段" to "パイプ" (unnatural literal translation) ([#33](https://github.com/shigechika/junos-mcp/issues/33)) ([612d370](https://github.com/shigechika/junos-mcp/commit/612d370a7e8ba76bd90c1f7942cc0d3cc586074f))
+
 ## [0.15.2](https://github.com/shigechika/junos-mcp/compare/v0.15.1...v0.15.2) (2026-07-06)
 
 
