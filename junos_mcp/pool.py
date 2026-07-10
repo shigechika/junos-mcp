@@ -154,8 +154,9 @@ class ConnectionPool:
         PyEZ as ``ConnectError``) or a slow NETCONF handshake
         (``ConnectTimeoutError``) — means the device is reachable but
         momentarily slow, so it is worth up to ``connect_attempts`` tries with
-        ``connect_retry_delay`` seconds between them.  Permanent failures (see
-        :data:`_RETRYABLE_CONNECT_ERRORS`) return immediately.
+        ``connect_retry_delay`` seconds between them.  Errors outside
+        :data:`_RETRYABLE_CONNECT_ERRORS` (auth, NETCONF-refused, unknown host)
+        are permanent and return immediately.
 
         Called with the per-host ``entry.lock`` held, so any retry delay only
         blocks concurrent callers for this same host, not other hosts.
