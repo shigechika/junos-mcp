@@ -9,10 +9,10 @@ in `junos_mcp/pool.py`.
 
 See `CLAUDE.md` (Japanese) for the authoritative module/tool inventory and
 design notes — read it before reviewing changes to `server.py` or `pool.py`.
-Note it currently says "23 tools" and "115 tests"; the actual counts have
-drifted upward as tools were added, so don't treat those numbers in CLAUDE.md
-as exact — check `grep -c '^@mcp.tool' junos_mcp/server.py` and the test run
-output instead of citing a stale figure in review comments.
+Its tool/test counts have drifted upward before as tools were added, so don't
+treat those numbers in CLAUDE.md as exact — check
+`grep -c '^@mcp.tool' junos_mcp/server.py` and the test run output instead of
+citing a possibly-stale figure in review comments.
 
 # Build & validate
 
@@ -88,14 +88,41 @@ or a disconnected device. `JUNOS_MCP_POOL=0` disables pooling entirely.
 (`test_different_hosts_get_different_entries`) and eviction logic, but only
 by calling `acquire()` sequentially in a single thread — there is no test
 that actually races threads against the same or different pool entries. In
-production, real concurrency comes from `run_show_command_batch` and
-`collect_rsi_batch`, which fan out via `common.run_parallel`
-(`ThreadPoolExecutor`) — and `tests/test_server.py` mocks
-`common.run_parallel` out entirely, so it never exercises the pool under
-real threads either. Treat any change to lock scope, entry lifecycle, or
+production, the concurrency that actually hits the pool comes from
+`run_show_command_batch` (its worker calls `run_show_command` →
+`_connect_and_run` → `pool.acquire`) and `daily_brief` (`server.py:1479-1485`,
+which acquires pooled connections directly inside `common.run_parallel` worker
+threads). Note `collect_rsi_batch` fans out via `common.run_parallel` too but
+*bypasses* the pool — its worker calls `collect_rsi`, which opens a direct
+`common.connect()` (`server.py:595`), as do
+`check_reachability`/`check_remote_packages` via `_check_one_host`
+(`server.py:721`). Either way `tests/test_server.py` mocks
+`common.run_parallel` out entirely, so nothing exercises the pool under real
+threads. Treat any change to lock scope, entry lifecycle, or
 eviction timing in `pool.py` as needing more scrutiny than the test diff
 alone shows, since a stale-connection-reuse or lock-ordering bug here would
 most plausibly surface only when multiple hosts are hit concurrently.
+
+`pool.py`'s `_connect` (PR #37) retries a *transient* connect failure
+(`JUNOS_MCP_POOL_CONNECT_ATTEMPTS`, default 2 = one retry;
+`JUNOS_MCP_POOL_CONNECT_DELAY`, default 1.0s), but only for errors in
+`_RETRYABLE_CONNECT_ERRORS` (`ConnectError`/`ConnectTimeoutError`).
+`ConnectAuthError` is deliberately excluded — retrying bad credentials risks
+account lockout — so flag any diff that adds an auth/permission error to the
+retryable set. The retry `time.sleep` runs while the per-host `entry.lock` is
+held (by design: it blocks only same-host callers, not other hosts); flag a
+change that moves it outside the lock without accounting for that intent.
+
+A related concurrency hazard lives outside `pool.py`: junos-ops' process-global
+`common.args`/`common.config` are mutated per tool call (e.g. `copy_package`
+/`install_package`/`rollback_package`/`schedule_reboot` set
+`common.args.dry_run`/`force`/`subcommand`/`unlink`; `collect_rsi` rewrites and
+restores `common.config`'s per-host `RSI_DIR`), while batch tools run workers in
+threads via `common.run_parallel`. `daily_brief` pre-populates the `host` option
+before spawning threads specifically to dodge a ConfigParser race
+(`server.py:1474-1477`). Flag a new batch tool that wraps a `common.args`- or
+`common.config`-mutating operation inside `run_parallel` workers — it would
+introduce a silent cross-host race.
 
 ## 5. Tool inputs are LLM-driven — treat them as adversarial, but be precise about the surface
 
