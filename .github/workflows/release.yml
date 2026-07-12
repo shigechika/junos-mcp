@@ -99,6 +99,9 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+      # release-please already created the GitHub Release (with notes) when it
+      # pushed the tag, so `gh release create` would fail with "already exists".
+      # Attach the built artifacts to that existing release instead.
+      - run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
         env:
           GH_TOKEN: ${{ github.token }}
