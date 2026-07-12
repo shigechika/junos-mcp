@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.5](https://github.com/shigechika/junos-mcp/compare/v0.15.4...v0.15.5) (2026-07-12)
+
+
+### Documentation
+
+* drop stale tool count from server.py module docstring ([#42](https://github.com/shigechika/junos-mcp/issues/42)) ([a206151](https://github.com/shigechika/junos-mcp/commit/a2061519d151229ee0291b432bccf91ffde4c7b1)), closes [#39](https://github.com/shigechika/junos-mcp/issues/39)
+
 ## [0.15.4](https://github.com/shigechika/junos-mcp/compare/v0.15.3...v0.15.4) (2026-07-12)
 
 
