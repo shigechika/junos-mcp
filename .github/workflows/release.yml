@@ -87,21 +87,3 @@ jobs:
         run: |
           mcp-publisher login github-oidc
           mcp-publisher publish
-
-  github-release:
-    needs: [publish, mcp-registry]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist/
-      # release-please already created the GitHub Release (with notes) when it
-      # pushed the tag, so `gh release create` would fail with "already exists".
-      # Attach the built artifacts to that existing release instead.
-      - run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}
