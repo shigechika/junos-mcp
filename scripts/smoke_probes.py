@@ -21,11 +21,16 @@ time, and skip when it is empty.
 each probe pins the parallelism and targets a single discovered device instead.
 
 Assertions are shape-first: these tools answer with formatted text and render
-their failures as ordinary text rather than raising, so every probe both pins
-the shape a working answer has and refuses the ``Error: ...`` /
-``Connection error: ...`` lines the tool produces instead. A device that
-answers "no differences from rollback 1" is fine; a device that could not be
-reached is not.
+their failures as ordinary text rather than raising, so a probe pins the shape
+a working answer has and refuses the ``Error: ...`` / ``Connection error: ...``
+lines the tool produces instead. Where a tool renders a failure in the same
+shape as a success — the show-command family repeats the command either way,
+and the check tables report an unreachable device as a word in a cell — the
+probe pins something only a real answer contains instead.
+
+A device that answers "no differences from rollback 1" is fine, and so is one
+a check table reports as down: this exercises the tools, not the estate. What
+must not pass is a tool that stopped answering.
 """
 
 import re
@@ -35,6 +40,10 @@ from smoke_harness import Caller, Probe, SkipProbe
 
 #: A command every JUNOS device answers and no device is changed by.
 SHOW_COMMAND = "show system uptime"
+
+#: A field its output always carries. The tools repeat the command back whether
+#: it succeeded or failed, so this is what separates the two.
+SHOW_COMMAND_MARKER = r"Current time:"
 
 #: One worker: each probe below targets a single discovered device, and pinning
 #: the value keeps a scheduled run from inheriting a fan-out sized for an
@@ -79,7 +88,9 @@ PROBES: dict[str, Probe] = {
     # -- server / inventory --------------------------------------------------
     "health_check": Probe(
         require_keys=("status", "service", "config", "router_count"),
-        must_match=(r'"config": "ok"', r'"status": "(healthy|degraded)"'),
+        # "healthy" outright: unlike its siblings, this check has no degraded
+        # state — it either loads config.ini or reports error.
+        must_match=(r'"config": "ok"', r'"status": "healthy"'),
         # router_count is the one number worth asserting: an inventory that
         # resolved to zero devices would let every probe below skip politely
         # while the server audits nothing.
@@ -99,7 +110,9 @@ PROBES: dict[str, Probe] = {
     "compare_version": Probe(
         args={"left": "22.4R3-S6.5", "right": "22.4R3-S7"},
         must_match=(r"\S",),
-        must_not_match=(r"^Error: invalid version",),
+        # Both of its error branches, not just the one: an out-of-range
+        # comparison answers "Error: unexpected result ...".
+        must_not_match=(r"^Error: ",),
         min_chars=3,
     ),
     # -- per-device reads ----------------------------------------------------
@@ -146,45 +159,58 @@ PROBES: dict[str, Probe] = {
     # Exercised with a show command: these tools accept operational commands in
     # general, and the smoke test must not be the thing that types one that
     # matters.
+    # An RPC that fails renders exactly like one that succeeds — "## <command>"
+    # followed by a body that is the error text instead of the output — so the
+    # envelope proves nothing here. The assertion has to name something only a
+    # real answer contains.
     "run_show_command": Probe(
         args_factory=_first_host,
         args={"command": SHOW_COMMAND, "output_format": "text"},
-        must_match=(r"\S",),
-        min_chars=20,
+        must_match=(rf"^## {SHOW_COMMAND}", SHOW_COMMAND_MARKER),
         must_not_match=NO_ERROR,
     ),
     "run_show_commands": Probe(
         args_factory=_first_host,
         args={"commands": [SHOW_COMMAND], "output_format": "text"},
-        min_chars=20,
+        must_match=(rf"^## {SHOW_COMMAND}", SHOW_COMMAND_MARKER),
         must_not_match=NO_ERROR,
     ),
     "run_show_command_batch": Probe(
         args_factory=_first_host_as_target,
         args={"command": SHOW_COMMAND, "max_workers": MAX_WORKERS},
-        min_chars=20,
+        must_match=(r"^# \S", SHOW_COMMAND_MARKER),
         must_not_match=NO_ERROR,
     ),
     # -- fleet checks --------------------------------------------------------
+    # These render an aligned table and never an "Error:" line: a device that
+    # could not be reached is the word "fail" in a cell, so NO_ERROR could not
+    # fire for them. Two assertions, because the header alone is printed even
+    # when nothing was checked: the header proves the renderer ran, and a data
+    # row whose connect cell holds one of the two values the checker can
+    # produce proves the check itself ran for a host.
+    #
+    # "fail" is accepted on purpose. This probe targets one device, so a run
+    # where every row failed is indistinguishable from that device being down —
+    # and a device being down is a real answer from a working tool. Failing on
+    # it would alarm every maintenance window, which is how a daily check gets
+    # ignored.
     "check_reachability": Probe(
         args_factory=_first_host_as_target,
         args={"max_workers": MAX_WORKERS},
-        must_match=(r"\S",),
-        min_chars=20,
+        must_match=(r"^hostname\s+connect\b", r"^\S+\s+(ok|fail)\b"),
         must_not_match=NO_ERROR,
     ),
     "check_remote_packages": Probe(
         args_factory=_first_host_as_target,
         args={"max_workers": MAX_WORKERS},
-        min_chars=10,
+        must_match=(r"^hostname\s+", r"^-+\s+-+"),
         must_not_match=NO_ERROR,
     ),
     # Reads the local package directory and the config, not a device: an estate
     # with no <model>.file entries answers with a sentence, which is a real
     # deployment rather than a failure.
     "check_local_inventory": Probe(
-        must_match=(r"\S",),
-        min_chars=10,
+        must_match=(r"^model\s+file\s+checksum\b|^No models with ",),
         must_not_match=NO_ERROR,
     ),
     # get_package_info needs a model name as well as a host, and a model is a
@@ -192,9 +218,9 @@ PROBES: dict[str, Probe] = {
     # from the discovered device's own facts instead.
     # Two legitimate answers, and NO_ERROR cannot separate them: a model with no
     # image staged in config.ini is reported with the same "Error:" prefix as a
-    # device that could not be reached. So the accepted shapes are named
-    # explicitly instead — anything else (an unknown host, a connection
-    # failure) matches neither and fails.
+    # hostname that is not in the config at all. This tool needs no device
+    # connection, so those two are its only failure modes; the accepted shapes
+    # are named explicitly and anything else fails.
     "get_package_info": Probe(
         args_factory=_host_and_model,
         must_match=(r"^# \S.*\nPackage file: |^Error: No option '[^']+\.file'",),

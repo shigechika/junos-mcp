@@ -1570,12 +1570,13 @@ def health_check(config_path: str = "") -> dict:
     Juniper devices, so this check ONLY loads config.ini and counts hosts — it
     opens NO NETCONF/SSH connection to any device.
 
-    Always returns the same keys: ``status`` (healthy / degraded / error),
+    Always returns the same keys: ``status`` (healthy / error),
     ``service``, ``version``, ``config_path`` (the resolved config.ini path it
     would use), ``router_count`` (number of host sections in config.ini),
     ``tags`` (sorted list of distinct tags across configured hosts), and
-    ``config`` (ok / error / missing). On a degraded or error result, ``detail``
-    carries the reason.
+    ``config`` (ok / error / missing). On an error result, ``detail`` carries
+    the reason. There is no degraded state: this check either loads config.ini
+    or it does not.
 
     Args:
         config_path: Path to config.ini (empty string uses default search).
