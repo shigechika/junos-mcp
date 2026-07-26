@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0](https://github.com/shigechika/junos-mcp/compare/v0.15.6...v0.16.0) (2026-07-26)
+
+
+### Features
+
+* live smoke test that exercises every registered tool ([#57](https://github.com/shigechika/junos-mcp/issues/57)) ([985b485](https://github.com/shigechika/junos-mcp/commit/985b4856a01bea771242d9a957a87075d3568346))
+
 ## [0.15.6](https://github.com/shigechika/junos-mcp/compare/v0.15.5...v0.15.6) (2026-07-12)
 
 
