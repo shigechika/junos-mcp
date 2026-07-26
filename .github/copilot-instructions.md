@@ -154,6 +154,18 @@ connect call reports. Flag any diff that adds logging of that error text at
 a broader scope (e.g. a new debug log of the full `conn` dict) without
 checking it can't include embedded auth details.
 
+## 7. The live smoke test's probe specs are a coverage contract
+
+`tests/test_smoke_probes.py` guards `scripts/smoke_test.py`, which exercises
+every registered tool against real devices. It asserts what can be checked
+without them: every registered tool has a probe spec, no spec targets a
+removed tool, the device-changing tools stay skipped, every bounding
+parameter a tool offers is passed explicitly, and no estate-specific literal
+(hostname, hardware model, address) is written into the specs — this
+repository is public. A new tool therefore needs an entry in
+`scripts/smoke_probes.py` or CI fails; that is deliberate, not an obstacle to
+route around.
+
 # Out of scope for review comments
 
 - Formatting/style nits: no `ruff`/`black`/`mypy` step exists in this

@@ -316,6 +316,45 @@ pytest tests/ -v
 
 133 tests covering all 23 tools, the connection pool, helper functions, and edge cases.
 
+### Live smoke test
+
+Those tests mock PyEZ, which is what makes them fast — and also what makes them
+blind to a tool that has stopped returning real data.
+`scripts/smoke_test.py` runs **every registered tool** against the configured
+devices and fails on empty, malformed or error answers:
+
+```bash
+# uses the same inventory file as the server (JUNOS_OPS_CONFIG)
+uv run python scripts/smoke_test.py
+uv run python scripts/smoke_test.py --only facts --traceback
+```
+
+- **Read-only.** `push_config`, `copy_package`, `install_package`,
+  `rollback_package` and `schedule_reboot` are skipped by name, and a test
+  enforces that. `collect_rsi` / `collect_rsi_batch` are skipped too — they
+  change nothing, but they are minutes of RE CPU and a file per device for an
+  answer no assertion would read. The command-running tools are exercised with
+  `show system uptime`: they accept operational commands in general, and a
+  smoke test must not be the thing that types one that matters.
+- **No payloads in the report.** Tool names and statuses only; error text is
+  redacted too, since these tools quote the device they were asked about and
+  the payloads are configuration.
+- **Nothing estate-specific in the specs.** The device the per-host tools need
+  is discovered at run time from the configured inventory, and the hardware
+  model `get_package_info` needs comes from that device's own facts. Two tests
+  keep it that way: one refuses those parameters as literals, the other bans
+  anything address-shaped anywhere in the file, because this repository is
+  public.
+- Every probe refuses the `Error: ...` / `Connection error: ...` lines these
+  tools return in place of raising — otherwise an unreachable device would read
+  as a successful call.
+- CI enforces the cheap half: a tool registered without a probe spec fails the
+  build (`tests/test_smoke_probes.py`), so adding a tool forces the question
+  "how would we know it works?".
+- `scripts/smoke_harness.py` is the engine and holds no JUNOS knowledge: it is
+  kept identical across the servers that share it, so fix engine bugs once and
+  sync the file rather than patching this copy.
+
 ## Architecture
 
 ### Stdout-safe by construction
