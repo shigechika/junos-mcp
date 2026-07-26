@@ -172,5 +172,5 @@ claude mcp add junos-mcp -s project \
 ## コーディング規約
 
 - README.md は英語、README.ja.md は日本語
-- docstring は英語、コード内コメントは日本語
+- docstring もコード内コメントも英語（public リポジトリで日本語なのは *.ja.md のみ）
 - コミットメッセージは conventional commits スタイル
