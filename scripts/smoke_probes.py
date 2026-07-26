@@ -184,19 +184,26 @@ PROBES: dict[str, Probe] = {
     # -- fleet checks --------------------------------------------------------
     # These render an aligned table and never an "Error:" line: a device that
     # could not be reached is the word "fail" in a cell, so NO_ERROR could not
-    # fire for them. What is asserted is that the table was rendered — a device
-    # being down is a real answer from a working tool, and failing on it would
-    # alarm every maintenance window.
+    # fire for them. Two assertions, because the header alone is printed even
+    # when nothing was checked: the header proves the renderer ran, and a data
+    # row whose connect cell holds one of the two values the checker can
+    # produce proves the check itself ran for a host.
+    #
+    # "fail" is accepted on purpose. This probe targets one device, so a run
+    # where every row failed is indistinguishable from that device being down —
+    # and a device being down is a real answer from a working tool. Failing on
+    # it would alarm every maintenance window, which is how a daily check gets
+    # ignored.
     "check_reachability": Probe(
         args_factory=_first_host_as_target,
         args={"max_workers": MAX_WORKERS},
-        must_match=(r"^hostname\s+connect\b",),
+        must_match=(r"^hostname\s+connect\b", r"^\S+\s+(ok|fail)\b"),
         must_not_match=NO_ERROR,
     ),
     "check_remote_packages": Probe(
         args_factory=_first_host_as_target,
         args={"max_workers": MAX_WORKERS},
-        must_match=(r"^hostname\s+",),
+        must_match=(r"^hostname\s+", r"^-+\s+-+"),
         must_not_match=NO_ERROR,
     ),
     # Reads the local package directory and the config, not a device: an estate

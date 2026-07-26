@@ -93,7 +93,7 @@ README.ja.md            # 日本語版
 - `daily_brief` — 複数デバイスの朝次ヘルスチェックを並列実行。`_check_host_health()` で 6 チェック（system/chassis alarms、interface down、syslog アラートパターン、dual-RE 冗長性 `[RE_FAULT]`（SRX クラスタはスキップ）、`route_baseline` 指定時の inet.0 経路数ベースライン `[ROUTE_BASELINE]`）を実行し CRITICAL/WARNING/OK の 3 段階 Markdown サマリーを返す。`since_hours`（デフォルト 18 h）で syslog のルックバック窓、`route_baseline`（デフォルト 0＝無効）で経路数ベースライン、`max_workers`（デフォルト 10）で並列度を指定
 
 #### MCP ツール — サーバーヘルス（1）
-- `health_check` — サーバーのバージョンと config.ini の読み込み状態を報告（デバイスには一切接続しない軽量チェック）。`status`（healthy / degraded / error）・`version`・`config_path`・`router_count`・`tags`・`config` を常に同じキーで返し、全例外を捕捉して raise しない（PR #22）。セッション開始時やタイムアウト後の疎通確認用
+- `health_check` — サーバーのバージョンと config.ini の読み込み状態を報告（デバイスには一切接続しない軽量チェック）。`status`（healthy / error — degraded 状態は存在しない）・`version`・`config_path`・`router_count`・`tags`・`config` を常に同じキーで返し、全例外を捕捉して raise しない（PR #22）。セッション開始時やタイムアウト後の疎通確認用
 
 #### 共通パラメータ
 - `hostname`: 接続先ホスト名（config.ini に存在する必要あり、必須）
