@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
-    "mcp>=1.0,<2",
+    "mcp>=1.28,<2",
     "junos-ops>=0.23.0",
 ]
 
