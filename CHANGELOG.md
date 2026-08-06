@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.4](https://github.com/shigechika/junos-mcp/compare/v0.16.3...v0.16.4) (2026-08-06)
+
+
+### Bug Fixes
+
+* **deps:** ignore mcp major version updates in Dependabot ([#70](https://github.com/shigechika/junos-mcp/issues/70)) ([c9e6842](https://github.com/shigechika/junos-mcp/commit/c9e6842bbf46021e051cb8680cabd4a5f8b59aad))
+
 ## [0.16.3](https://github.com/shigechika/junos-mcp/compare/v0.16.2...v0.16.3) (2026-07-31)
 
 
