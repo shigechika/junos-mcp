@@ -25,9 +25,11 @@ pytest tests/ -v
 
 This mirrors `.github/workflows/test.yml` (matrix over Python 3.12–3.14 on
 Linux, plus one Windows 3.12 job specifically to guard against stdio
-newline regressions, `modelcontextprotocol/python-sdk#2433`). There is no
-`ruff`/`black`/`mypy` job in CI — don't hold diffs to a style standard this
-repo hasn't opted into.
+newline regressions, `modelcontextprotocol/python-sdk#2433`), plus a `lint`
+job running `ruff check .` at a pinned version. `ruff format` is
+deliberately not gated (see `ruff.toml`) and there is no `black`/`mypy`
+job — don't hold diffs to a formatting or typing standard this repo
+hasn't opted into, and don't restate what `ruff check` already enforces.
 
 # What to focus review on in this repo
 
@@ -168,8 +170,9 @@ route around.
 
 # Out of scope for review comments
 
-- Formatting/style nits: no `ruff`/`black`/`mypy` step exists in this
-  repo's CI.
+- Formatting nits: `ruff check .` is gated in CI at a pinned version, but
+  `ruff format` deliberately is not (see `ruff.toml`), and there is no
+  `black`/`mypy` step.
 - `release-please.yml` using `secrets.RELEASE_PLEASE_TOKEN` (falling back to
   `GITHUB_TOKEN`) instead of just `GITHUB_TOKEN` is intentional — a
   `GITHUB_TOKEN`-authored tag push doesn't trigger the downstream `release`
