@@ -69,12 +69,14 @@ reviewer also receives.
   defect. Do not describe this path as safely structured either — it
   is not, and does not need to be. The reviewable surface here is
   `output_format` handling, and the config-mutation rule above.
-- Anything CI already fails on, restated as a review comment. `ruff
-  check .` is gated at a pinned version, and
-  `tests/test_smoke_probes.py` already fails the build for a registered
-  tool with no probe spec. This does **not** extend to that file's
-  estate-specific-literal assertion — a hostname, model or address
-  leaking into a public repository is worth catching twice.
+- A finding that does nothing but restate one of the two gates CI
+  already enforces: `ruff check .` is gated at a pinned version, and `tests/test_smoke_probes.py`
+  already fails the build for a registered tool with no probe spec.
+  This covers those two and nothing further. It never applies to a
+  rule listed under **Always blocking** above, even when the same
+  diff happens to fail a test as well, and it does not cover that
+  same file's estate-specific-literal assertion — a hostname, model or address
+  reaching a public repository is worth catching twice.
 - `ruff format` findings. Formatting is deliberately not gated here;
   see `ruff.toml`.
 - Suggestions to hand-build an MCP content envelope
