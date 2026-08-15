@@ -200,9 +200,41 @@ junos-ops と同じ `config.ini` を使用します。詳細は [junos-ops READM
 2. `./config.ini`
 3. `~/.config/junos-ops/config.ini`
 
+`config.ini` は実質的に必須です。デバイス接続を一切開かない `get_router_list` や `health_check` も含め、すべてのツールが起動時にこのファイルを読みます。ファイルが見つからないときに動作を続ける代替経路は無いので、MCP クライアントに登録する前に、上記3か所のいずれかに有効な `config.ini` を配置してください。
+
+### 状態を変えるツール
+
+状態を変えるのは5本だけです。ほかはすべて読み取りです。これは dry-run が既定の5本と同じものです — dry-run と commit-confirmed の仕組みは [安全設計](#安全設計) を参照してください。ここでは、各ツールが実際に何を呼び、デバイス側のどの権限でゲートされるかを扱います。
+
+| ツール | API 呼び出し | 権限ゲート |
+|---|---|---|
+| `push_config` | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → ヘルスチェック → 最終 `commit` → `unlock` | 対象ホストの `config.ini` アカウントに、configuration mode と commit を許す JUNOS login class が必要（読み取り専用/operator クラスでは不可）。クラス名自体はホストごとに `config.ini` で用意したもの。 |
+| `copy_package` | `junos_ops.upgrade.copy()` — チェックサム検証と事前クリーンアップ付きでファームウェアパッケージを SCP コピー | 同じアカウントにファイルコピー/ストレージ書き込み権限（デバイスの flash への SCP）が必要。 |
+| `install_package` | `junos_ops.upgrade.install()` — バージョン確認、保留中ロールバックの確認、コピー+チェックサム、リブートスケジュールのクリア、rescue-config 保存の後、PyEZ `SW.install()`（低容量な EX2300/EX3400 向けには `unlink` フラグ経由の `request system software add`） | ソフトウェアインストール権限が必要 — JUNOS `maintenance` クラスまたは superuser login class。 |
+| `rollback_package` | `junos_ops.upgrade.rollback()` — 保留中バージョンの存在を確認した上での `request system software rollback` 相当 | `install_package` と同じ、昇格されたソフトウェアメンテナンス権限。 |
+| `schedule_reboot` | `request system reboot at <time>` をスケジュール | デバイス上のリブート/メンテナンス権限が必要。 |
+
+あるホストの `config.ini` アカウントを読み取り専用/operator クラスでプロビジョニングすると、このホストに対してはこの5本だけが権限エラーで失敗します。show コマンド・設定読み取り・診断・`daily_brief` など、それ以外のツールはそのまま動作し続けます。プラグイン側に別のスイッチは無く、この境界はすべて `config.ini` に設定した JUNOS login class に委ねられています。
+
 ## 使い方
 
-### Claude Code
+### Claude Code（プラグイン）
+
+このリポジトリはプラグイン 1 個のマーケットプレイスも兼ねているので、Claude Code からそのまま導入できます:
+
+```
+/plugin marketplace add shigechika/junos-mcp
+/plugin install junos-mcp@junos-mcp
+```
+
+プラグインは `uvx junos-mcp` を起動し、[設定](#設定)と同じ環境変数を読みます。Claude Code を起動する前に `JUNOS_OPS_CONFIG` を export するか（または `config.ini` を `./config.ini` や `~/.config/junos-ops/config.ini` に配置してから）起動してください。
+
+プラグインは `uvx` を起動するため、Claude Code を実行するプロセスの `PATH` に
+`uvx` が通っている必要があります。ログインシェルなら通常問題ありませんが、
+GUI から起動した場合は通っていないことがあります。プラグインが起動しない場合は
+[uv](https://docs.astral.sh/uv/) をシステム全体にインストールしてください。
+
+### Claude Code（手動）
 
 `claude mcp add` コマンドで MCP サーバーを登録します:
 

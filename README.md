@@ -223,9 +223,40 @@ Each tool accepts an optional `config_path` parameter. If omitted, the default s
 2. `./config.ini`
 3. `~/.config/junos-ops/config.ini`
 
+`config.ini` is not optional in practice: every tool — including `get_router_list` and `health_check`, which never open a device connection — reads from it at startup, and there is no degrade-gracefully path if it can't be found. Put a working `config.ini` in one of the three locations above before registering the server with any MCP client.
+
+### Write operations
+
+Five tools change device state. Everything else only reads. These are the same five that default to `dry_run=True` — see [Safety by Design](#safety-by-design) for the dry-run and commit-confirmed mechanics; this table is about what each one calls and the device-side privilege that gates it.
+
+| Tool | API call | Permission gate |
+|---|---|---|
+| `push_config` | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → health check → final `commit` → `unlock` | The `config.ini` account for the target host needs a JUNOS login class permitting configuration mode and commit — not a read-only/operator class. The exact class name is whatever was provisioned per device in `config.ini`. |
+| `copy_package` | `junos_ops.upgrade.copy()` — SCPs the firmware package to the device with checksum verification and pre-copy storage cleanup | Same account needs file-copy / storage-write access (SCP to device flash). |
+| `install_package` | `junos_ops.upgrade.install()` — version check, pending-rollback check, copy + checksum, clear reboot schedule, rescue-config save, then PyEZ `SW.install()` (or `request system software add` via the `unlink` CLI path on low-flash EX2300/EX3400) | Requires software-installation privilege — JUNOS `maintenance`-class or superuser login class. |
+| `rollback_package` | `junos_ops.upgrade.rollback()` — equivalent of `request system software rollback`, only after confirming a pending version exists | Same elevated software-maintenance privilege as `install_package`. |
+| `schedule_reboot` | Schedules `request system reboot at <time>` | Requires reboot/maintenance privilege on the device. |
+
+Provision the `config.ini` account for a host with a read-only/operator login class and these five tools fail against that host with a permission error; every other tool — show commands, config reads, diagnostics, `daily_brief` — keeps working. There is no separate plugin-level switch for this: the privilege boundary is entirely in the JUNOS login class assigned to the account in `config.ini`.
+
 ## Usage
 
-### Claude Code
+### Claude Code (plugin)
+
+This repository doubles as a single-plugin marketplace, so Claude Code can install the server for you:
+
+```
+/plugin marketplace add shigechika/junos-mcp
+/plugin install junos-mcp@junos-mcp
+```
+
+The plugin launches `uvx junos-mcp` and reads the same environment variables described in [Configuration](#configuration); export `JUNOS_OPS_CONFIG` (or drop `config.ini` at `./config.ini` or `~/.config/junos-ops/config.ini`) before starting Claude Code.
+
+`uvx` must be on the `PATH` of the process that runs Claude Code — a login
+shell usually has it, but a GUI-launched app may not; install
+[uv](https://docs.astral.sh/uv/) system-wide if the plugin fails to start.
+
+### Claude Code (manual)
 
 Register the MCP server with `claude mcp add`:
 

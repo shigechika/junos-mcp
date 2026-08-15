@@ -1,0 +1,17 @@
+{
+  "name": "junos-mcp",
+  "description": "junos-mcp server, packaged as a Claude Code plugin.",
+  "owner": {
+    "name": "AIKAWA Shigechika",
+    "url": "https://github.com/shigechika"
+  },
+  "plugins": [
+    {
+      "name": "junos-mcp",
+      "source": "./plugin",
+      "description": "MCP server for junos-ops, giving Claude Code access to Juniper JUNOS devices: show commands, config diffs and pushes, firmware upgrades, RSI/SCF diagnostics, and a daily_brief health check across a fleet. All destructive tools default to dry-run, and push_config uses commit-confirmed with an automatic post-commit rollback.",
+      "category": "networking",
+      "homepage": "https://shigechika.github.io/junos-mcp/"
+    }
+  ]
+}

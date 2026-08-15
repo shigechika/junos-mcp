@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "junos-mcp": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["junos-mcp"],
+      "env": {
+        "JUNOS_OPS_CONFIG": "${JUNOS_OPS_CONFIG:-}",
+        "JUNOS_MCP_POOL": "${JUNOS_MCP_POOL:-1}",
+        "JUNOS_MCP_POOL_IDLE": "${JUNOS_MCP_POOL_IDLE:-60}",
+        "JUNOS_MCP_POOL_CONNECT_ATTEMPTS": "${JUNOS_MCP_POOL_CONNECT_ATTEMPTS:-2}",
+        "JUNOS_MCP_POOL_CONNECT_DELAY": "${JUNOS_MCP_POOL_CONNECT_DELAY:-1.0}"
+      }
+    }
+  }
+}
