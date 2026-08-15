@@ -8,3 +8,6 @@ build/
 config.ini
 .claude/
 .mcp.json
+# The plugin's copy is a template holding only ${VAR} placeholders -- no secrets.
+!plugin/.mcp.json
+site/

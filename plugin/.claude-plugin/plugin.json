@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "junos-mcp",
+  "displayName": "JUNOS MCP",
+  "description": "MCP server for junos-ops, giving Claude Code access to Juniper JUNOS devices: show commands, config diffs and pushes, firmware upgrades, RSI/SCF diagnostics, and a daily_brief health check across a fleet. All destructive tools default to dry-run, and push_config uses commit-confirmed with an automatic post-commit rollback. Requires a junos-ops config.ini (device inventory plus SSH/NETCONF credentials) on the machine running the server -- this plugin can only pass through the file's path, so you must author config.ini yourself before any tool is usable.",
+  "author": {
+    "name": "AIKAWA Shigechika",
+    "url": "https://github.com/shigechika"
+  },
+  "homepage": "https://shigechika.github.io/junos-mcp/",
+  "repository": "https://github.com/shigechika/junos-mcp",
+  "license": "Apache-2.0",
+  "keywords": [
+    "junos",
+    "juniper",
+    "netconf",
+    "network-automation",
+    "networking",
+    "infrastructure"
+  ]
+}
