@@ -28,6 +28,7 @@ import os
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from junos_ops import common
@@ -37,6 +38,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_IDLE: float = 60.0
 _DEFAULT_CONNECT_ATTEMPTS: int = 2  # one retry
 _DEFAULT_CONNECT_RETRY_DELAY: float = 1.0
+
+# Devices are independent NETCONF sessions to different hosts, so closing them
+# on shutdown is embarrassingly parallel; this just bounds the thread count on
+# a fleet with hundreds of pooled hosts.
+_MAX_CLOSE_WORKERS: int = 16
 
 # Connect failures worth a retry: a device that is reachable but momentarily
 # slow.  ``ConnectError`` is the class PyEZ raises for a bare SSH-layer failure
@@ -110,12 +116,41 @@ class ConnectionPool:
             entry.lock.release()
 
     def close_all(self) -> None:
-        """Close all pooled connections.  Called at process exit via atexit."""
+        """Close all pooled connections.  Called at process exit via atexit.
+
+        Devices are closed concurrently (bounded by :data:`_MAX_CLOSE_WORKERS`)
+        rather than one at a time: on a fleet with dozens of pooled hosts, a
+        serial close-on-exit — e.g. triggered by an unclean crash rather than a
+        deliberate shutdown — blocked the process for several seconds per dozen
+        hosts, long enough for an external client's own request timeout to fire
+        while a caller was waiting on an in-flight request. Each device still
+        has its ``entry.lock`` held for the duration of its own close, mirroring
+        :meth:`acquire`'s contract; ``_close_dev`` already swallows per-entry
+        errors, so parallelizing it doesn't change error handling.
+
+        atexit runs late enough in interpreter shutdown that
+        ``concurrent.futures`` can already be refusing new work (observed as
+        ``RuntimeError: cannot schedule new futures after interpreter
+        shutdown`` even though the pool itself constructs fine) — falling back
+        to a plain serial loop in that case still closes every device, just
+        without the speedup, instead of leaving them all open.
+        """
         with self._lock:
-            for entry in self._entries.values():
-                with entry.lock:
-                    self._close_dev(entry)
+            entries = list(self._entries.values())
             self._entries.clear()
+        if not entries:
+            return
+        try:
+            with ThreadPoolExecutor(max_workers=min(len(entries), _MAX_CLOSE_WORKERS)) as pool:
+                list(pool.map(self._close_locked, entries))
+        except RuntimeError:
+            for entry in entries:
+                self._close_locked(entry)
+
+    @staticmethod
+    def _close_locked(entry: _Entry) -> None:
+        with entry.lock:
+            ConnectionPool._close_dev(entry)
 
     # ------------------------------------------------------------------
     # Internal helpers

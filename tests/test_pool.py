@@ -404,6 +404,44 @@ class TestConnectionPoolCloseAll:
         p.close_all()  # should not raise
         assert len(p._entries) == 0
 
+    def test_close_all_closes_devices_concurrently(self):
+        """close_all() overlaps device closes instead of running them one at a time.
+
+        Each mock ``close()`` blocks for ``sleep_s``. ``_close_dev`` swallows any
+        exception a close() raises, so a serial-vs-parallel regression can't be
+        caught by making close() fail on contention — it has to be caught by
+        wall-clock time instead: serial closing of ``n`` devices takes roughly
+        ``n * sleep_s``, while overlapping them keeps the total close to one
+        ``sleep_s`` plus scheduling overhead.
+        """
+        n = 8
+        sleep_s = 0.2
+        devs = [_make_dev() for _ in range(n)]
+        for dev in devs:
+            dev.close.side_effect = lambda: time.sleep(sleep_s)
+        p = ConnectionPool(idle_timeout=60)
+
+        with patch("junos_mcp.pool.common.connect", side_effect=[_ok(d) for d in devs]):
+            for i, dev in enumerate(devs):
+                with p.acquire(f"rt{i}", "/cfg"):
+                    pass
+
+        start = time.monotonic()
+        p.close_all()
+        elapsed = time.monotonic() - start
+
+        for dev in devs:
+            dev.close.assert_called_once()
+        assert len(p._entries) == 0
+        # Serial would take ~n * sleep_s (1.6s here); overlapping stays well under half that.
+        assert elapsed < sleep_s * (n / 2)
+
+    def test_close_all_on_empty_pool_is_a_no_op(self):
+        """close_all() with nothing pooled doesn't spin up a thread pool."""
+        p = ConnectionPool(idle_timeout=60)
+        p.close_all()  # should not raise
+        assert len(p._entries) == 0
+
 
 # ---------------------------------------------------------------------------
 # get_pool() module-level helper
