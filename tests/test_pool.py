@@ -1,6 +1,7 @@
 """Tests for junos_mcp.pool — ConnectionPool behaviour."""
 
 import logging
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -403,6 +404,116 @@ class TestConnectionPoolCloseAll:
 
         p.close_all()  # should not raise
         assert len(p._entries) == 0
+
+    def test_close_all_clears_entries_even_when_run_parallel_itself_raises(self):
+        """A scheduling failure (not just RuntimeError) still empties _entries.
+
+        ``common.run_parallel`` fails outright (e.g. thread creation exhausted
+        under ``OSError``, not just the interpreter-shutdown ``RuntimeError``
+        this fallback was originally written for) before any device gets a
+        chance to close via the parallel path. The serial fallback must still
+        run, and ``_entries.clear()`` must still happen even if the serial
+        fallback itself were to raise -- both are guaranteed by ``finally``,
+        not by hoping every exception type is anticipated.
+        """
+        dev = _make_dev()
+        p = ConnectionPool(idle_timeout=60)
+
+        with patch("junos_mcp.pool.common.connect", return_value=_ok(dev)):
+            with p.acquire("rt1", "/cfg"):
+                pass
+
+        with patch("junos_mcp.pool.common.run_parallel", side_effect=OSError("out of threads")):
+            p.close_all()  # should not raise, and must fall back to closing rt1 serially
+
+        dev.close.assert_called_once()
+        assert len(p._entries) == 0
+
+    def test_close_all_closes_devices_concurrently(self):
+        """close_all() overlaps device closes instead of running them one at a time.
+
+        Each mock ``close()`` blocks for ``sleep_s``. ``_close_dev`` swallows any
+        exception a close() raises, so a serial-vs-parallel regression can't be
+        caught by making close() fail on contention — it has to be caught by
+        wall-clock time instead: serial closing of ``n`` devices takes roughly
+        ``n * sleep_s``, while overlapping them keeps the total close to one
+        ``sleep_s`` plus scheduling overhead.
+        """
+        n = 8
+        sleep_s = 0.2
+        devs = [_make_dev() for _ in range(n)]
+        for dev in devs:
+            dev.close.side_effect = lambda: time.sleep(sleep_s)
+        p = ConnectionPool(idle_timeout=60)
+
+        with patch("junos_mcp.pool.common.connect", side_effect=[_ok(d) for d in devs]):
+            for i, dev in enumerate(devs):
+                with p.acquire(f"rt{i}", "/cfg"):
+                    pass
+
+        start = time.monotonic()
+        p.close_all()
+        elapsed = time.monotonic() - start
+
+        for dev in devs:
+            dev.close.assert_called_once()
+        assert len(p._entries) == 0
+        # Serial would take ~n * sleep_s (1.6s here); overlapping stays well under half that.
+        assert elapsed < sleep_s * (n / 2)
+
+    def test_close_all_on_empty_pool_is_a_no_op(self):
+        """close_all() with nothing pooled doesn't spin up a thread pool."""
+        p = ConnectionPool(idle_timeout=60)
+        p.close_all()  # should not raise
+        assert len(p._entries) == 0
+
+    def test_concurrent_acquire_during_close_all_does_not_survive_it(self):
+        """A fresh acquire() started while close_all() is still closing devices
+        must not leave an entry behind once close_all() returns.
+
+        close_all() holds ``self._lock`` for its whole call (not just around
+        clearing ``_entries``), so a concurrent ``acquire()`` for a different
+        host has to wait for the in-flight (slow) close to finish before it
+        can even create its own entry. If that guarantee regressed, the
+        second acquire() would return almost immediately (racing the close)
+        and its entry would still be in ``_entries`` afterwards.
+        """
+        sleep_s = 0.2
+        dev1 = _make_dev()
+        dev1.close.side_effect = lambda: time.sleep(sleep_s)
+        dev2 = _make_dev()
+        p = ConnectionPool(idle_timeout=60)
+
+        with patch("junos_mcp.pool.common.connect", side_effect=[_ok(dev1), _ok(dev2)]):
+            with p.acquire("rt1", "/cfg"):
+                pass
+
+            close_all_started = threading.Event()
+
+            def _run_close_all():
+                close_all_started.set()
+                p.close_all()
+
+            closer = threading.Thread(target=_run_close_all)
+            closer.start()
+            close_all_started.wait()
+            time.sleep(sleep_s / 4)  # let close_all() acquire self._lock and start closing rt1
+
+            start = time.monotonic()
+            with p.acquire("rt2", "/cfg"):
+                pass
+            elapsed = time.monotonic() - start
+
+        closer.join()
+
+        # The second acquire() had to wait out most of rt1's close (~0.15s
+        # remaining by the time it's attempted) before it could even look up
+        # self._entries, because close_all() held the lock the whole time --
+        # not just released it once rt1's close began. The unpatched bug made
+        # this run in microseconds, so sleep_s/4 still leaves a wide margin
+        # (~3x below the expected wait) without flaking on scheduling jitter.
+        assert elapsed > sleep_s / 4
+        assert list(p._entries.keys()) == [("rt2", "/cfg")]
 
 
 # ---------------------------------------------------------------------------
