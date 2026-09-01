@@ -1,6 +1,7 @@
 """Tests for junos_mcp.pool — ConnectionPool behaviour."""
 
 import logging
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -441,6 +442,51 @@ class TestConnectionPoolCloseAll:
         p = ConnectionPool(idle_timeout=60)
         p.close_all()  # should not raise
         assert len(p._entries) == 0
+
+    def test_concurrent_acquire_during_close_all_does_not_survive_it(self):
+        """A fresh acquire() started while close_all() is still closing devices
+        must not leave an entry behind once close_all() returns.
+
+        close_all() holds ``self._lock`` for its whole call (not just around
+        clearing ``_entries``), so a concurrent ``acquire()`` for a different
+        host has to wait for the in-flight (slow) close to finish before it
+        can even create its own entry. If that guarantee regressed, the
+        second acquire() would return almost immediately (racing the close)
+        and its entry would still be in ``_entries`` afterwards.
+        """
+        sleep_s = 0.2
+        dev1 = _make_dev()
+        dev1.close.side_effect = lambda: time.sleep(sleep_s)
+        dev2 = _make_dev()
+        p = ConnectionPool(idle_timeout=60)
+
+        with patch("junos_mcp.pool.common.connect", side_effect=[_ok(dev1), _ok(dev2)]):
+            with p.acquire("rt1", "/cfg"):
+                pass
+
+            close_all_started = threading.Event()
+
+            def _run_close_all():
+                close_all_started.set()
+                p.close_all()
+
+            closer = threading.Thread(target=_run_close_all)
+            closer.start()
+            close_all_started.wait()
+            time.sleep(sleep_s / 4)  # let close_all() acquire self._lock and start closing rt1
+
+            start = time.monotonic()
+            with p.acquire("rt2", "/cfg"):
+                pass
+            elapsed = time.monotonic() - start
+
+        closer.join()
+
+        # The second acquire() had to wait out most of rt1's close before it
+        # could even look up self._entries, because close_all() held the lock
+        # the whole time -- not just released it once rt1's close began.
+        assert elapsed > sleep_s / 2
+        assert list(p._entries.keys()) == [("rt2", "/cfg")]
 
 
 # ---------------------------------------------------------------------------

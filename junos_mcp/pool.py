@@ -118,15 +118,25 @@ class ConnectionPool:
     def close_all(self) -> None:
         """Close all pooled connections.  Called at process exit via atexit.
 
-        Devices are closed concurrently (bounded by :data:`_MAX_CLOSE_WORKERS`)
-        rather than one at a time: on a fleet with dozens of pooled hosts, a
-        serial close-on-exit — e.g. triggered by an unclean crash rather than a
-        deliberate shutdown — blocked the process for several seconds per dozen
-        hosts, long enough for an external client's own request timeout to fire
-        while a caller was waiting on an in-flight request. Each device still
-        has its ``entry.lock`` held for the duration of its own close, mirroring
-        :meth:`acquire`'s contract; ``_close_dev`` already swallows per-entry
-        errors, so parallelizing it doesn't change error handling.
+        The actual device closes run concurrently (bounded by
+        :data:`_MAX_CLOSE_WORKERS`) rather than one at a time: on a fleet with
+        dozens of pooled hosts, closing them serially blocked the process for
+        several seconds per dozen hosts, long enough for an external client's
+        own request timeout to fire while a caller was waiting on an in-flight
+        request. Each device still has its ``entry.lock`` held for the
+        duration of its own close, mirroring :meth:`acquire`'s contract;
+        ``_close_dev`` already swallows per-entry errors, so parallelizing it
+        doesn't change error handling.
+
+        ``self._lock`` (which guards the ``_entries`` dict, not any individual
+        device) is held for the *whole* call, exactly as it was before this
+        was parallelized — only the slow per-device work moved to worker
+        threads. Releasing it earlier, before every device had actually
+        finished closing, would let a concurrent :meth:`acquire` slip a fresh
+        entry into ``_entries`` mid-close, which then survives the trailing
+        ``clear()`` and breaks the "close_all leaves the pool empty" contract.
+        None of the worker threads need ``self._lock`` themselves, so holding
+        it here for the whole call cannot deadlock against them.
 
         atexit runs late enough in interpreter shutdown that
         ``concurrent.futures`` can already be refusing new work (observed as
@@ -137,15 +147,14 @@ class ConnectionPool:
         """
         with self._lock:
             entries = list(self._entries.values())
+            if entries:
+                try:
+                    with ThreadPoolExecutor(max_workers=min(len(entries), _MAX_CLOSE_WORKERS)) as pool:
+                        list(pool.map(self._close_locked, entries))
+                except RuntimeError:
+                    for entry in entries:
+                        self._close_locked(entry)
             self._entries.clear()
-        if not entries:
-            return
-        try:
-            with ThreadPoolExecutor(max_workers=min(len(entries), _MAX_CLOSE_WORKERS)) as pool:
-                list(pool.map(self._close_locked, entries))
-        except RuntimeError:
-            for entry in entries:
-                self._close_locked(entry)
 
     @staticmethod
     def _close_locked(entry: _Entry) -> None:
