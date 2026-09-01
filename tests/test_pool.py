@@ -405,6 +405,30 @@ class TestConnectionPoolCloseAll:
         p.close_all()  # should not raise
         assert len(p._entries) == 0
 
+    def test_close_all_clears_entries_even_when_run_parallel_itself_raises(self):
+        """A scheduling failure (not just RuntimeError) still empties _entries.
+
+        ``common.run_parallel`` fails outright (e.g. thread creation exhausted
+        under ``OSError``, not just the interpreter-shutdown ``RuntimeError``
+        this fallback was originally written for) before any device gets a
+        chance to close via the parallel path. The serial fallback must still
+        run, and ``_entries.clear()`` must still happen even if the serial
+        fallback itself were to raise -- both are guaranteed by ``finally``,
+        not by hoping every exception type is anticipated.
+        """
+        dev = _make_dev()
+        p = ConnectionPool(idle_timeout=60)
+
+        with patch("junos_mcp.pool.common.connect", return_value=_ok(dev)):
+            with p.acquire("rt1", "/cfg"):
+                pass
+
+        with patch("junos_mcp.pool.common.run_parallel", side_effect=OSError("out of threads")):
+            p.close_all()  # should not raise, and must fall back to closing rt1 serially
+
+        dev.close.assert_called_once()
+        assert len(p._entries) == 0
+
     def test_close_all_closes_devices_concurrently(self):
         """close_all() overlaps device closes instead of running them one at a time.
 
@@ -482,10 +506,13 @@ class TestConnectionPoolCloseAll:
 
         closer.join()
 
-        # The second acquire() had to wait out most of rt1's close before it
-        # could even look up self._entries, because close_all() held the lock
-        # the whole time -- not just released it once rt1's close began.
-        assert elapsed > sleep_s / 2
+        # The second acquire() had to wait out most of rt1's close (~0.15s
+        # remaining by the time it's attempted) before it could even look up
+        # self._entries, because close_all() held the lock the whole time --
+        # not just released it once rt1's close began. The unpatched bug made
+        # this run in microseconds, so sleep_s/4 still leaves a wide margin
+        # (~3x below the expected wait) without flaking on scheduling jitter.
+        assert elapsed > sleep_s / 4
         assert list(p._entries.keys()) == [("rt2", "/cfg")]
 
 

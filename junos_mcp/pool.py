@@ -28,7 +28,6 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from junos_ops import common
@@ -138,23 +137,34 @@ class ConnectionPool:
         None of the worker threads need ``self._lock`` themselves, so holding
         it here for the whole call cannot deadlock against them.
 
+        Uses :func:`junos_ops.common.run_parallel` — the same bounded-worker
+        helper ``server.py`` already uses for its own fan-out tools — rather
+        than a hand-rolled executor.
+
         atexit runs late enough in interpreter shutdown that
         ``concurrent.futures`` can already be refusing new work (observed as
         ``RuntimeError: cannot schedule new futures after interpreter
-        shutdown`` even though the pool itself constructs fine) — falling back
-        to a plain serial loop in that case still closes every device, just
-        without the speedup, instead of leaving them all open.
+        shutdown`` even though a fresh ``ThreadPoolExecutor`` constructs
+        fine). Falling back to a plain serial loop on ANY exception from the
+        parallel path — not just that one — closes every device regardless,
+        and the fallback is wrapped in ``finally`` so ``_entries`` is always
+        left empty afterwards even if something unexpected still escapes.
         """
         with self._lock:
             entries = list(self._entries.values())
-            if entries:
-                try:
-                    with ThreadPoolExecutor(max_workers=min(len(entries), _MAX_CLOSE_WORKERS)) as pool:
-                        list(pool.map(self._close_locked, entries))
-                except RuntimeError:
-                    for entry in entries:
-                        self._close_locked(entry)
-            self._entries.clear()
+            try:
+                if entries:
+                    try:
+                        common.run_parallel(
+                            self._close_locked,
+                            entries,
+                            max_workers=min(len(entries), _MAX_CLOSE_WORKERS),
+                        )
+                    except Exception:
+                        for entry in entries:
+                            self._close_locked(entry)
+            finally:
+                self._entries.clear()
 
     @staticmethod
     def _close_locked(entry: _Entry) -> None:
