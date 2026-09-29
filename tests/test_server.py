@@ -2042,3 +2042,33 @@ class TestDailyBriefJob:
 
     def test_unknown_job(self):
         assert daily_brief_result("nope")["status"] == "unknown"
+
+
+class TestBriefJobConfigGuard:
+    def test_config_switch_refused_while_a_job_runs(self, mock_config):
+        import junos_mcp.server as srv
+
+        with srv._ACTIVE_BRIEF_JOBS_LOCK:
+            srv._ACTIVE_BRIEF_JOBS += 1
+        try:
+            with patch("junos_mcp.server._init_globals") as init:
+                err = srv._ensure_config("/some/other/config.ini")
+            assert err and "background job is running" in err
+            init.assert_not_called()
+            assert srv._ensure_config("") is None  # the loaded config is still usable
+        finally:
+            with srv._ACTIVE_BRIEF_JOBS_LOCK:
+                srv._ACTIVE_BRIEF_JOBS -= 1
+
+    def test_counter_returns_to_zero_after_a_job(self, mock_config):
+        import time
+
+        import junos_mcp.server as srv
+
+        with patch("junos_mcp.server._daily_brief_impl", return_value="B"):
+            job_id = daily_brief_start()["job_id"]
+            for _ in range(50):
+                if daily_brief_result(job_id)["status"] != "running":
+                    break
+                time.sleep(0.05)
+        assert srv._ACTIVE_BRIEF_JOBS == 0

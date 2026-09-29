@@ -122,6 +122,13 @@ def _init_globals(config_path: str = "") -> str | None:
     return None
 
 
+# The config is process-global (``common.config``). A background daily_brief job keeps
+# using it for minutes, so while one runs a call that would switch to a different
+# config file is refused instead of silently repointing the job at another fleet.
+_ACTIVE_BRIEF_JOBS = 0
+_ACTIVE_BRIEF_JOBS_LOCK = threading.Lock()
+
+
 def _ensure_config(config_path: str) -> str | None:
     """Initialize globals if needed. Return error string or None."""
     # 既に初期化済みで同じ config の場合はスキップ
@@ -131,6 +138,12 @@ def _ensure_config(config_path: str) -> str | None:
         and (not config_path or common.args.config == config_path)
     ):
         return None
+    with _ACTIVE_BRIEF_JOBS_LOCK:
+        if _ACTIVE_BRIEF_JOBS and common.config is not None:
+            return (
+                "Error: a daily_brief background job is running with the current config; "
+                "retry with the same config_path (or none) once it has finished"
+            )
     return _init_globals(config_path)
 
 
@@ -1659,11 +1672,15 @@ def _finish_job(job_id: str, payload: dict) -> None:
 
 
 def _run_brief_job(job_id: str, args: tuple) -> None:
+    global _ACTIVE_BRIEF_JOBS
     try:
         _finish_job(job_id, {"status": "done", "result": _daily_brief_impl(*args, None)})
     except Exception as exc:
         # Only the type: the message may embed hostnames or paths.
         _finish_job(job_id, {"status": "error", "error": type(exc).__name__})
+    finally:
+        with _ACTIVE_BRIEF_JOBS_LOCK:
+            _ACTIVE_BRIEF_JOBS -= 1
 
 
 @mcp.tool()
@@ -1681,7 +1698,22 @@ def daily_brief_start(
     timeout is about 60 s). Arguments mirror ``daily_brief``. Poll ``daily_brief_result(job_id)``
     every few seconds until ``status`` is ``done`` (the full brief is under ``result``, with no
     deadline) or ``error``. If too many jobs are retained, returns ``{"status": "rejected", ...}``.
+
+    While a job is running, a call that would switch to a different config file is
+    refused (the config is process-global); use the same ``config_path`` or none.
+
+    Args:
+        hostnames: Only these hosts (must exist in config.ini). Default: all hosts.
+        tags: Tag filter. Each element is one group: a comma inside an element means
+            the host must have ALL of those tags (``"main,core"``); several elements
+            are ORed (``["main", "core"]`` = hosts tagged main OR core). Case-insensitive.
+            With ``hostnames`` too, the result is the intersection of the two.
+        since_hours: Look-back window for syslog/interface events (default 18).
+        route_baseline: When > 0, flag a device whose inet.0 route count differs.
+        max_workers: Devices checked in parallel (default 10).
+        config_path: Path to config.ini (empty uses the default search).
     """
+    global _ACTIVE_BRIEF_JOBS
     err = _ensure_config(config_path)
     if err:
         return {"error": err}
@@ -1691,6 +1723,8 @@ def daily_brief_start(
         if len(_JOBS) >= _JOBS_MAX:
             return {"status": "rejected", "error": f"too many brief jobs (>= {_JOBS_MAX}); retry shortly"}
         _JOBS[job_id] = {"status": "running", "created": time.monotonic()}
+    with _ACTIVE_BRIEF_JOBS_LOCK:
+        _ACTIVE_BRIEF_JOBS += 1
     thread = threading.Thread(
         target=_run_brief_job,
         args=(job_id, (hostnames, tags, since_hours, route_baseline, max_workers, config_path)),
@@ -1702,6 +1736,8 @@ def daily_brief_start(
     except RuntimeError as exc:
         with _JOBS_LOCK:
             _JOBS.pop(job_id, None)
+        with _ACTIVE_BRIEF_JOBS_LOCK:
+            _ACTIVE_BRIEF_JOBS -= 1
         return {"status": "error", "error": type(exc).__name__}
     return {"job_id": job_id, "status": "running", "poll_with": "daily_brief_result", "poll_after_seconds": 5}
 
