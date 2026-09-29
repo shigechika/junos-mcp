@@ -114,6 +114,7 @@ python -m junos_mcp --help
 | `--check` | config.ini を読み込みルータ一覧を表示して終了（エラー時 exit 1） |
 | `--check-host HOSTNAME` | `--check` と併用し、指定ホストに NETCONF 接続して到達性と認証を確認 |
 | `--transport {stdio,streamable-http}` | トランスポート（デフォルト: `stdio`） |
+| `--host HOST` / `--port PORT` | streamable-http のみ: 待ち受けのアドレスとポート（デフォルト: `127.0.0.1` / `8000`）。`FASTMCP_HOST` / `FASTMCP_PORT` は MCP Python SDK 2.x では読まれないので，こちらを使う |
 
 `--check` は AI アシスタントに登録する前に `JUNOS_OPS_CONFIG` と `config.ini` の到達性を確認するのに便利です。`--check-host rt1` と併用すれば、実機に対して認証情報が通るかまで検証できます。
 

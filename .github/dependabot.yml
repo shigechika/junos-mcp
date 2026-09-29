@@ -7,8 +7,9 @@ updates:
     labels:
       - "dependencies"
     ignore:
-      # The mcp <2 pin is deliberate: SDK 2.0 is a breaking rewrite that took
-      # down every server in this fleet when it shipped. Major bumps are a
+      # mcp is pinned below the next major on purpose: SDK 2.0 was a breaking
+      # rewrite that took down every server in this fleet when it shipped. 1.x
+      # and 2.x are both supported now (see junos_mcp/server.py); a 3.x bump is a
       # manual migration, not a dependency update.
       - dependency-name: "mcp"
         update-types: ["version-update:semver-major"]

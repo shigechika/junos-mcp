@@ -7,7 +7,7 @@ import os
 import sys
 
 from junos_mcp import __version__
-from junos_mcp.server import _ensure_config, mcp
+from junos_mcp.server import MCP_SDK_MAJOR, _ensure_config, mcp
 
 
 def _check_config(check_host: str | None = None) -> int:
@@ -59,6 +59,24 @@ def _check_config(check_host: str | None = None) -> int:
     return 0
 
 
+def _http_listen_options(transport: str, host: str | None, port: int | None) -> dict:
+    """Apply --host / --port for streamable-http on either SDK major.
+
+    mcp 1.x reads them from the server settings (also FASTMCP_HOST / FASTMCP_PORT);
+    mcp 2.x takes them only as run() arguments and ignores those variables.
+    Returns the extra keyword arguments for ``mcp.run``.
+    """
+    if transport != "streamable-http" or (host is None and port is None):
+        return {}
+    if MCP_SDK_MAJOR >= 2:
+        return {k: v for k, v in (("host", host), ("port", port)) if v is not None}
+    if host is not None:
+        mcp.settings.host = host
+    if port is not None:
+        mcp.settings.port = port
+    return {}
+
+
 def main() -> None:
     """Entry point for console_scripts."""
     parser = argparse.ArgumentParser(
@@ -99,13 +117,25 @@ def main() -> None:
         default="stdio",
         help="transport protocol (default: stdio)",
     )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="streamable-http: address to listen on (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="streamable-http: port to listen on (default: 8000)",
+    )
     args = parser.parse_args()
 
     if args.check or args.check_host:
         sys.exit(_check_config(args.check_host))
 
+    run_kwargs = _http_listen_options(args.transport, args.host, args.port)
     try:
-        mcp.run(transport=args.transport)
+        mcp.run(transport=args.transport, **run_kwargs)
     except KeyboardInterrupt:
         # Bypass normal interpreter shutdown: FastMCP's stdio reader runs in a
         # daemon thread blocked on sys.stdin, and joining it at shutdown can

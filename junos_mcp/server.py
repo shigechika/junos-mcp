@@ -28,7 +28,14 @@ from concurrent import futures
 from pprint import pformat
 
 from lxml import etree
-from mcp.server.fastmcp import FastMCP
+try:  # mcp 2.x renamed FastMCP to MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP
+
+    MCP_SDK_MAJOR = 2
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP
+
+    MCP_SDK_MAJOR = 1
 
 from jnpr.junos.utils.config import Config
 from junos_ops import common
@@ -68,7 +75,13 @@ _RE_FAULT_STATES = {"fault", "fail", "failed", "offline", "absent", "empty", "te
 # routing-instance tables ("VRF.inet.0:", "mgmt_junos.inet.0:") out.
 _ROUTE_INET0_RE = re.compile(r"^inet\.0:\s+(\d+) destinations", re.MULTILINE)
 
-mcp = FastMCP("junos-mcp")
+if MCP_SDK_MAJOR >= 2:
+    # 2.x takes the version for serverInfo here (1.x reports the SDK's own).
+    from junos_mcp import __version__ as _version
+
+    mcp = FastMCP("junos-mcp", version=_version)
+else:
+    mcp = FastMCP("junos-mcp")
 
 
 def _resolve_config_path(config_path: str) -> str:

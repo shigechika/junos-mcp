@@ -125,6 +125,7 @@ python -m junos_mcp --help
 | `--check` | Load config.ini, list routers, and exit (exit code 1 on error) |
 | `--check-host HOSTNAME` | With `--check`, also open a NETCONF session to verify reachability/auth |
 | `--transport {stdio,streamable-http}` | Transport protocol (default: `stdio`) |
+| `--host HOST` / `--port PORT` | streamable-http only: address and port to listen on (default: `127.0.0.1` / `8000`). Use these rather than `FASTMCP_HOST` / `FASTMCP_PORT`, which MCP Python SDK 2.x no longer reads |
 
 `--check` is handy to verify `JUNOS_OPS_CONFIG` and `config.ini` are reachable before registering the server with an AI assistant. Combine with `--check-host rt1` to also confirm that credentials actually authenticate against a real device.
 
