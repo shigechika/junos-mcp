@@ -63,6 +63,7 @@ junos-ops の display 層を共有します。
 | ツール | 説明 | 接続 |
 |---|---|:---:|
 | `daily_brief` | 複数デバイスの朝次ヘルスチェックを並列実行。システム/シャーシアラーム、インターフェース Up/Down、指定時間内（`since_hours`、デフォルト 18 h）の syslog アラートパターン、dual-RE 故障（`[RE_FAULT]`。SRX シャーシクラスタは facts が RE 状態を誤報告するため対象外）、任意の `inet.0` 経路数ベースライン（`route_baseline`）を確認し、CRITICAL/WARNING/OK の Markdown サマリーを返す | 要 |
+| `daily_brief_start` / `daily_brief_result` | 1 回の呼び出しに収まらない台数のためのバックグラウンド実行（ホスト型クライアントの 1 呼び出しの上限は約 60 秒）。`daily_brief_start` がすぐ `job_id` を返し，`daily_brief_result` を `done` になるまで呼ぶ。同期の `daily_brief` は `JUNOS_DEADLINE` 秒（既定 45，0 で無効）で打ち切り，未完了の機器を `NOT CHECKED` に列挙する。 | Yes |
 
 書き込みを行う5本のツールが実際にデバイス上で何を呼び、`config.ini` の
 どの権限でゲートされるかは [セットアップの「状態を変えるツール」](setup.ja.md)
