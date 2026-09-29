@@ -51,4 +51,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - run: pip install -e ".[test]"
+      - run: python -c "import importlib.metadata as m; print('mcp', m.version('mcp'))"
+      - run: pytest tests/ -v
+
+  # The matrix above resolves the newest mcp (2.x). The server also supports 1.x
+  # (junos_mcp/server.py imports MCPServer or FastMCP), so keep that path tested too.
+  test-mcp-v1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install -e ".[test]" "mcp<2"
+      - run: python -c "import importlib.metadata as m; v = m.version('mcp'); print('mcp', v); assert v.startswith('1.')"
       - run: pytest tests/ -v

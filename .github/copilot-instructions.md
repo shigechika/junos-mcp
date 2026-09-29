@@ -4,7 +4,7 @@
 [junos-ops](https://github.com/shigechika/junos-ops) (a Juniper JUNOS CLI
 tool/library) to AI assistants over **stdio** (default) or
 **streamable-http** transport. Built on the official `mcp` Python SDK's
-`FastMCP` (`junos_mcp/server.py`), with per-host NETCONF connection pooling
+`FastMCP` (`junos_mcp/server.py`; on mcp 2.x this is `MCPServer`, imported under the same name, and CI tests both 1.x and 2.x), with per-host NETCONF connection pooling
 in `junos_mcp/pool.py`.
 
 See `CLAUDE.md` (Japanese) for the authoritative module/tool inventory and

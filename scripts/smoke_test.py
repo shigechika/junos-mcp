@@ -53,7 +53,8 @@ def _decode(result: Any) -> Any:
 
     ``mcp.server.fastmcp`` hands back ``(content_blocks, structured_result)``
     when it converts a result, and bare content blocks otherwise; the
-    standalone FastMCP client used by --stdio hands back a ``CallToolResult``.
+    standalone FastMCP client used by --stdio hands back a ``CallToolResult``, and so
+    does mcp 2.x's ``MCPServer.call_tool`` in-process (the first branch below covers both).
     Everything downstream expects a str/dict/list, so unwrap all three here
     rather than teaching the engine about SDK shapes.
     """

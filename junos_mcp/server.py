@@ -28,7 +28,10 @@ from concurrent import futures
 from pprint import pformat
 
 from lxml import etree
-from mcp.server.fastmcp import FastMCP
+try:  # mcp 2.x renamed FastMCP to MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP
 
 from jnpr.junos.utils.config import Config
 from junos_ops import common
