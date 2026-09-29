@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.1](https://github.com/shigechika/junos-mcp/compare/v0.20.0...v0.20.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* pin mcp&lt;2 again; behind the mcp-stdio gateway a 2.x server answers nothing ([#92](https://github.com/shigechika/junos-mcp/issues/92)) ([efc0a16](https://github.com/shigechika/junos-mcp/commit/efc0a16bdb16ed21e537431d37aa2f17d5104f91))
+
 ## [0.20.0](https://github.com/shigechika/junos-mcp/compare/v0.19.0...v0.20.0) (2026-09-29)
 
 
