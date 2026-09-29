@@ -4,7 +4,7 @@
 [junos-ops](https://github.com/shigechika/junos-ops) (a Juniper JUNOS CLI
 tool/library) to AI assistants over **stdio** (default) or
 **streamable-http** transport. Built on the official `mcp` Python SDK's
-`FastMCP` (`junos_mcp/server.py`; the dependency is `mcp>=1.2,<3`; on 2.x the class is `MCPServer`, imported under the `FastMCP` name), with per-host NETCONF connection pooling
+`MCPServer` (`junos_mcp/server.py`; the dependency is `mcp>=1.2,<3`; on 2.x the class is `MCPServer`, imported under the `MCPServer` name), with per-host NETCONF connection pooling
 in `junos_mcp/pool.py`.
 
 See `CLAUDE.md` (Japanese) for the authoritative module/tool inventory and
@@ -49,9 +49,9 @@ path does call `print()`, but it `sys.exit()`s before `mcp.run()` is ever
 reached, so it never shares the stdio channel with a live JSON-RPC session.
 Don't flag those.
 
-## 2. FastMCP already wraps tool returns — don't ask for manual envelope code
+## 2. MCPServer already wraps tool returns — don't ask for manual envelope code
 
-`@mcp.tool()`-decorated functions return a plain `str` or `dict`; FastMCP's
+`@mcp.tool()`-decorated functions return a plain `str` or `dict`; MCPServer's
 `func_metadata.convert_result()` wraps it into `TextContent` (or structured
 content) automatically. `health_check()` returning a plain `dict` is the
 clean example — don't suggest a tool hand-build

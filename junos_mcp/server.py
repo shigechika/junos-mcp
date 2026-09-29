@@ -28,14 +28,7 @@ from concurrent import futures
 from pprint import pformat
 
 from lxml import etree
-try:  # mcp 2.x renamed FastMCP to MCPServer
-    from mcp.server.mcpserver import MCPServer as FastMCP
-
-    MCP_SDK_MAJOR = 2
-except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP
-
-    MCP_SDK_MAJOR = 1
+from mcp.server.mcpserver import MCPServer
 
 from jnpr.junos.utils.config import Config
 from junos_ops import common
@@ -44,6 +37,7 @@ from junos_ops import rsi
 from junos_ops import show
 from junos_ops import upgrade
 
+from junos_mcp import __version__
 from junos_mcp.pool import PoolConnectionError, get_pool
 
 _SYSLOG_ALERT_RE = re.compile(
@@ -75,13 +69,7 @@ _RE_FAULT_STATES = {"fault", "fail", "failed", "offline", "absent", "empty", "te
 # routing-instance tables ("VRF.inet.0:", "mgmt_junos.inet.0:") out.
 _ROUTE_INET0_RE = re.compile(r"^inet\.0:\s+(\d+) destinations", re.MULTILINE)
 
-if MCP_SDK_MAJOR >= 2:
-    # 2.x takes the version for serverInfo here (1.x reports the SDK's own).
-    from junos_mcp import __version__ as _version
-
-    mcp = FastMCP("junos-mcp", version=_version)
-else:
-    mcp = FastMCP("junos-mcp")
+mcp = MCPServer("junos-mcp", version=__version__)
 
 
 def _resolve_config_path(config_path: str) -> str:
@@ -1838,7 +1826,6 @@ def health_check(config_path: str = "") -> dict:
     Args:
         config_path: Path to config.ini (empty string uses default search).
     """
-    from junos_mcp import __version__
 
     # Fixed shape: every key is present regardless of outcome, so callers can
     # read it uniformly and rely on `status` to judge health.

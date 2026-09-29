@@ -12,7 +12,7 @@ junos-mcpは、[junos-ops](https://github.com/shigechika/junos-ops) の機能を
 ## 技術スタック
 
 - **言語:** Python 3（3.12以上）
-- **主要ライブラリ:** MCP Python SDK（FastMCP）、junos-ops（junos-eznc）
+- **主要ライブラリ:** MCP Python SDK（MCPServer）、junos-ops（junos-eznc）
 - **トランスポート:** STDIO（デフォルト）または Streamable HTTP（`--transport` で選択、JSON-RPC）
 - **パッケージ管理:** pyproject.toml（pip installable）
 - **テスト:** pytest + モック
@@ -25,7 +25,7 @@ junos_mcp/
 ├── __init__.py         # パッケージ定義、__version__
 ├── __main__.py         # python -m junos_mcp 対応
 ├── pool.py             # per-host NETCONF 接続プール（ConnectionPool、get_pool）
-└── server.py           # FastMCP サーバー定義、24ツール実装
+└── server.py           # MCPServer サーバー定義、24ツール実装
 tests/
 ├── __init__.py
 ├── test_pool.py                # 27 ユニットテスト（ConnectionPool）
