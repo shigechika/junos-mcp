@@ -25,6 +25,8 @@ from junos_mcp.server import (
     compare_version,
     copy_package,
     daily_brief,
+    daily_brief_result,
+    daily_brief_start,
     install_package,
     push_config,
     rollback_package,
@@ -1863,6 +1865,11 @@ class TestCheckHostHealth:
 
 
 class TestDailyBrief:
+    @pytest.fixture(autouse=True)
+    def _no_deadline(self, monkeypatch):
+        # These tests mock common.run_parallel, the no-deadline path.
+        monkeypatch.setenv("JUNOS_DEADLINE", "0")
+
     @patch("junos_mcp.server.common.run_parallel")
     def test_all_ok(self, mock_parallel, mock_config):
         """全ホスト正常なら OK カウントが正しい"""
@@ -1949,3 +1956,89 @@ class TestDailyBrief:
         """config.ini に存在しないホスト名はエラー"""
         result = daily_brief(hostnames=["unknown.example.jp"])
         assert "Error" in result
+
+
+# --- daily_brief deadline and background job ---
+
+
+class TestDailyBriefDeadline:
+    def test_deadline_env(self, monkeypatch):
+        from junos_mcp.server import _deadline_seconds
+
+        monkeypatch.delenv("JUNOS_DEADLINE", raising=False)
+        assert _deadline_seconds() == 45.0
+        monkeypatch.setenv("JUNOS_DEADLINE", "10")
+        assert _deadline_seconds() == 10.0
+        monkeypatch.setenv("JUNOS_DEADLINE", "0")
+        assert _deadline_seconds() is None
+        monkeypatch.setenv("JUNOS_DEADLINE", "abc")
+        assert _deadline_seconds() == 45.0
+
+    def test_run_bounded_reports_pending(self):
+        import threading
+
+        from junos_mcp.server import _run_bounded
+
+        gate = threading.Event()
+
+        def func(host):
+            if host == "slow":
+                gate.wait(5)
+            return {"hostname": host}
+
+        try:
+            results, pending = _run_bounded(func, ["fast", "slow"], 2, 0.3)
+        finally:
+            gate.set()
+        assert "fast" in results
+        assert pending == ["slow"]
+
+    def test_run_bounded_no_deadline_uses_run_parallel(self):
+        from junos_mcp.server import _run_bounded
+
+        with patch("junos_mcp.server.common.run_parallel", return_value={"a": {}}) as rp:
+            assert _run_bounded(lambda h: {}, ["a"], 2, None) == ({"a": {}}, [])
+        rp.assert_called_once()
+
+    @patch("junos_mcp.server._run_bounded")
+    def test_partial_marker(self, mock_bounded, mock_config, monkeypatch):
+        monkeypatch.setenv("JUNOS_DEADLINE", "5")
+        mock_bounded.return_value = ({}, ["rt1.example.jp"])
+        result = daily_brief(hostnames=["rt1.example.jp"])
+        assert "1 NOT CHECKED (PARTIAL)" in result
+        assert "### NOT CHECKED (deadline)" in result
+        assert "Stopped after 5s; not finished: rt1.example.jp" in result
+        assert "0 OK" in result and "0 CRITICAL" in result
+
+
+class TestDailyBriefJob:
+    def test_job_lifecycle(self, mock_config):
+        import time
+
+        with patch("junos_mcp.server._daily_brief_impl", return_value="BRIEF") as impl:
+            started = daily_brief_start(hostnames=["rt1.example.jp"])
+            assert started["status"] == "running"
+            job_id = started["job_id"]
+            for _ in range(50):
+                out = daily_brief_result(job_id)
+                if out["status"] != "running":
+                    break
+                time.sleep(0.05)
+        assert out["status"] == "done"
+        assert out["result"] == "BRIEF"
+        assert impl.call_args.args[-1] is None  # the job runs without a deadline
+
+    def test_job_error_type_only(self, mock_config):
+        import time
+
+        with patch("junos_mcp.server._daily_brief_impl", side_effect=RuntimeError("secret host")):
+            job_id = daily_brief_start()["job_id"]
+            for _ in range(50):
+                out = daily_brief_result(job_id)
+                if out["status"] != "running":
+                    break
+                time.sleep(0.05)
+        assert out == {"job_id": job_id, "status": "error", "error": "RuntimeError"}
+
+    def test_unknown_job(self):
+        assert daily_brief_result("nope")["status"] == "unknown"

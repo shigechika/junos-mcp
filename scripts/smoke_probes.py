@@ -233,6 +233,13 @@ PROBES: dict[str, Probe] = {
         must_not_match=NO_ERROR,
         timeout=900,
     ),
+    "daily_brief_start": Probe(
+        args_factory=_first_host_as_target,
+        args={"max_workers": MAX_WORKERS, "since_hours": 18},
+        must_match=(r"job_id", r"running"),
+        must_not_match=NO_ERROR,
+    ),
+    "daily_brief_result": Probe(skip="needs the job id returned by daily_brief_start; covered by the unit tests"),
     # -- tools that change a device: never exercised -------------------------
     "push_config": Probe(skip="writes configuration to a production router"),
     "copy_package": Probe(skip="copies a multi-gigabyte image to the device"),

@@ -63,6 +63,7 @@ junos-ops display layer for table rendering.
 | Tool | Description | Connection |
 |---|---|:---:|
 | `daily_brief` | Morning health check across multiple devices in parallel — alarms, interface up/down, syslog alert patterns within a look-back window (`since_hours`, default 18 h), dual-RE faults (`[RE_FAULT]`; skipped on SRX chassis clusters, whose facts misreport RE status), and an optional `inet.0` route-count baseline (`route_baseline`). Returns a CRITICAL/WARNING/OK Markdown summary. | Yes |
+| `daily_brief_start` / `daily_brief_result` | Run the same sweep as a background job for fleets too large for one call (a hosted client's per-call limit is about 60 s): `daily_brief_start` returns a `job_id` at once, poll `daily_brief_result` until `done`. The synchronous `daily_brief` now stops after `JUNOS_DEADLINE` seconds (default 45; 0 disables) and lists unfinished hosts under `NOT CHECKED`. | Yes |
 
 See [Setup — Write operations](setup.md#write-operations) for what the five
 writing tools actually call on the device and which `config.ini` privilege

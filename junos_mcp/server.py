@@ -20,6 +20,10 @@ import datetime
 import os
 import os.path
 import re
+import secrets
+import threading
+import time
+from concurrent import futures
 from pprint import pformat
 
 from lxml import etree
@@ -1460,7 +1464,67 @@ def daily_brief(
 
     Returns a Markdown summary with anomaly details for CRITICAL/WARNING hosts
     and a collapsed OK list.
+
+    The call stops after ``JUNOS_DEADLINE`` seconds (default 45; 0 disables) so a
+    large fleet does not run into a client's per-call timeout: hosts that have not
+    finished are listed under ``NOT CHECKED`` and the summary is marked partial.
+    For a full sweep of a large fleet use ``daily_brief_start`` / ``daily_brief_result``.
     """
+    return _daily_brief_impl(
+        hostnames, tags, since_hours, route_baseline, max_workers, config_path, _deadline_seconds()
+    )
+
+
+def _deadline_seconds() -> float | None:
+    """Per-call deadline from JUNOS_DEADLINE (default 45 s); 0, negative or invalid -> default/None."""
+    raw = os.environ.get("JUNOS_DEADLINE", "")
+    if raw == "":
+        return _DEADLINE_DEFAULT
+    try:
+        secs = float(raw)
+    except ValueError:
+        return _DEADLINE_DEFAULT
+    return secs if secs > 0 else None
+
+
+_DEADLINE_DEFAULT = 45.0
+
+
+def _run_bounded(func, targets: list[str], max_workers: int, deadline: float | None):
+    """Run ``func`` over ``targets`` in parallel, giving up on stragglers after ``deadline`` seconds.
+
+    Returns ``(results, pending)``. With no deadline this is ``common.run_parallel``.
+    Workers that are still running when the deadline passes are not interrupted (a
+    NETCONF call cannot be cancelled); queued work is cancelled.
+    """
+    if deadline is None:
+        return common.run_parallel(func, targets, max_workers=max_workers), []
+    results: dict = {}
+    executor = futures.ThreadPoolExecutor(max_workers=max(1, max_workers))
+    future_to_target = {executor.submit(func, t): t for t in targets}
+    try:
+        for fut in futures.as_completed(future_to_target, timeout=deadline):
+            target = future_to_target[fut]
+            try:
+                results[target] = fut.result()
+            except Exception:
+                results[target] = 1
+    except futures.TimeoutError:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return results, [t for t in targets if t not in results]
+
+
+def _daily_brief_impl(
+    hostnames: list[str] | None,
+    tags: list[str] | None,
+    since_hours: int,
+    route_baseline: int,
+    max_workers: int,
+    config_path: str,
+    deadline_seconds: float | None,
+) -> str:
     err = _ensure_config(config_path)
     if err:
         return err
@@ -1506,14 +1570,17 @@ def daily_brief(
             except Exception:
                 pass
 
-    results = common.run_parallel(_run_one, targets, max_workers=max_workers)
+    results, pending = _run_bounded(_run_one, targets, max_workers, deadline_seconds)
 
     now_str = (
         datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
     )
 
     criticals, warnings, oks = [], [], []
+    pending_set = set(pending)
     for hostname in targets:
+        if hostname in pending_set:
+            continue
         row = results.get(hostname)
         if not isinstance(row, dict):
             # common.run_parallel stores a sentinel (int 1) for a worker that
@@ -1534,9 +1601,18 @@ def daily_brief(
     lines: list[str] = [
         f"## daily_brief — {now_str} (since -{since_hours}h)",
         f"## {len(targets)} hosts: "
-        f"{len(oks)} OK, {len(warnings)} WARNING, {len(criticals)} CRITICAL",
+        f"{len(oks)} OK, {len(warnings)} WARNING, {len(criticals)} CRITICAL"
+        + (f", {len(pending)} NOT CHECKED (PARTIAL)" if pending else ""),
         "",
     ]
+
+    if pending:
+        lines.append("### NOT CHECKED (deadline)")
+        lines.append(
+            f"Stopped after {deadline_seconds:g}s; not finished: " + ", ".join(pending)
+            + ". Re-run for these hosts (hostnames=[...]) or use daily_brief_start."
+        )
+        lines.append("")
 
     if criticals:
         lines.append("### CRITICAL")
@@ -1558,6 +1634,95 @@ def daily_brief(
         lines.append(ok_names)
 
     return "\n".join(lines)
+
+
+# --- background job + poll: the full sweep without holding one request open ---
+_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_TTL_SECONDS = 600  # retain a finished job this long after it finishes
+_JOBS_MAX = 32  # hard cap on retained jobs
+
+
+def _reap_jobs_locked() -> None:
+    """Drop finished jobs retained past the TTL (measured from completion). Caller holds the lock."""
+    now = time.monotonic()
+    for jid in [j for j, v in _JOBS.items() if v.get("finished") is not None and now - v["finished"] > _JOB_TTL_SECONDS]:
+        del _JOBS[jid]
+
+
+def _finish_job(job_id: str, payload: dict) -> None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is not None:
+            job.update(payload)
+            job["finished"] = time.monotonic()
+
+
+def _run_brief_job(job_id: str, args: tuple) -> None:
+    try:
+        _finish_job(job_id, {"status": "done", "result": _daily_brief_impl(*args, None)})
+    except Exception as exc:
+        # Only the type: the message may embed hostnames or paths.
+        _finish_job(job_id, {"status": "error", "error": type(exc).__name__})
+
+
+@mcp.tool()
+def daily_brief_start(
+    hostnames: list[str] | None = None,
+    tags: list[str] | None = None,
+    since_hours: int = 18,
+    route_baseline: int = 0,
+    max_workers: int = 10,
+    config_path: str = "",
+) -> dict:
+    """Start a daily_brief in the background; returns immediately with a ``job_id``.
+
+    Use this for a fleet too large for one synchronous ``daily_brief`` (a client's per-call
+    timeout is about 60 s). Arguments mirror ``daily_brief``. Poll ``daily_brief_result(job_id)``
+    every few seconds until ``status`` is ``done`` (the full brief is under ``result``, with no
+    deadline) or ``error``. If too many jobs are retained, returns ``{"status": "rejected", ...}``.
+    """
+    err = _ensure_config(config_path)
+    if err:
+        return {"error": err}
+    job_id = secrets.token_hex(8)
+    with _JOBS_LOCK:
+        _reap_jobs_locked()
+        if len(_JOBS) >= _JOBS_MAX:
+            return {"status": "rejected", "error": f"too many brief jobs (>= {_JOBS_MAX}); retry shortly"}
+        _JOBS[job_id] = {"status": "running", "created": time.monotonic()}
+    thread = threading.Thread(
+        target=_run_brief_job,
+        args=(job_id, (hostnames, tags, since_hours, route_baseline, max_workers, config_path)),
+        name=f"daily_brief-{job_id}",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except RuntimeError as exc:
+        with _JOBS_LOCK:
+            _JOBS.pop(job_id, None)
+        return {"status": "error", "error": type(exc).__name__}
+    return {"job_id": job_id, "status": "running", "poll_with": "daily_brief_result", "poll_after_seconds": 5}
+
+
+@mcp.tool()
+def daily_brief_result(job_id: str) -> dict:
+    """Fetch a ``daily_brief_start`` job by id.
+
+    ``status`` is ``running`` (keep polling), ``done`` (``result`` holds the brief), ``error``
+    (``error`` holds the exception type name only) or ``unknown`` (bad or expired id).
+    """
+    with _JOBS_LOCK:
+        _reap_jobs_locked()
+        job = _JOBS.get(job_id)
+        if job is None:
+            return {"job_id": job_id, "status": "unknown"}
+        out: dict = {"job_id": job_id, "status": job["status"]}
+        for key in ("result", "error"):
+            if key in job:
+                out[key] = job[key]
+        return out
 
 
 @mcp.tool()
