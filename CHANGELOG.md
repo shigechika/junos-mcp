@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/shigechika/junos-mcp/compare/v0.18.0...v0.19.0) (2026-09-29)
+
+
+### Features
+
+* bound daily_brief with a deadline and add a background job ([#89](https://github.com/shigechika/junos-mcp/issues/89)) ([951a3ac](https://github.com/shigechika/junos-mcp/commit/951a3ac78d6a3f92affe98701bc226026b912652))
+
+
+### Bug Fixes
+
+* close pooled NETCONF sessions concurrently on shutdown ([#85](https://github.com/shigechika/junos-mcp/issues/85)) ([7e61450](https://github.com/shigechika/junos-mcp/commit/7e61450ec9d7166bab7acaa08d198e6834e0de8b))
+
 ## [0.18.0](https://github.com/shigechika/junos-mcp/compare/v0.17.1...v0.18.0) (2026-08-15)
 
 
