@@ -54,15 +54,18 @@ jobs:
       - run: python -c "import importlib.metadata as m; print('mcp', m.version('mcp'))"
       - run: pytest tests/ -v
 
-  # The matrix above resolves the newest mcp (2.x). The server also supports 1.x
-  # (junos_mcp/server.py imports MCPServer or FastMCP), so keep that path tested too.
-  test-mcp-v1:
+  # The matrix above resolves mcp under the <2 pin. This job additionally installs the
+  # newest 2.x to see whether the server still imports and passes its tests there
+  # (informational: 2.x is not supported behind the gateway yet, so it is not required).
+  test-mcp-v2-compat:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - run: pip install -e ".[test]" "mcp<2"
-      - run: python -c "import importlib.metadata as m; v = m.version('mcp'); print('mcp', v); assert v.startswith('1.')"
+      - run: pip install -e ".[test]"
+      - run: pip install --upgrade "mcp>=2"  # conflicts with the <2 pin on purpose
+      - run: python -c "import importlib.metadata as m; v = m.version('mcp'); print('mcp', v); assert v.startswith('2.')"
       - run: pytest tests/ -v
