@@ -335,6 +335,10 @@ dynamic client registration, PKCE) and relays STDIO ↔ Streamable HTTP.
 See [mcp-stdio README](https://github.com/shigechika/mcp-stdio) for
 detailed configuration including OAuth provider setup.
 
+> When junos-mcp is launched by `mcp-stdio serve` (the gateway mode) and runs on MCP SDK 2.x,
+> use mcp-stdio 0.43.7 or later. Older gateways forward a request envelope that a 2.x server
+> rejects; on those, install with `mcp<2`.
+
 ### MCP Inspector (development)
 
 ```bash
