@@ -2153,21 +2153,14 @@ class TestHttpListenOptions:
         assert _http_listen_options("stdio", "0.0.0.0", 9000) == {}
         assert _http_listen_options("streamable-http", None, None) == {}
 
-    def test_options_reach_the_installed_sdk(self):
+    def test_options_become_run_arguments(self):
         import junos_mcp.__main__ as main_mod
-        from junos_mcp.server import MCP_SDK_MAJOR, mcp
 
         kwargs = main_mod._http_listen_options("streamable-http", "0.0.0.0", 9000)
-        if MCP_SDK_MAJOR >= 2:
-            assert kwargs == {"host": "0.0.0.0", "port": 9000}
-        else:
-            assert kwargs == {}
-            assert (mcp.settings.host, mcp.settings.port) == ("0.0.0.0", 9000)
-            mcp.settings.host, mcp.settings.port = "127.0.0.1", 8000
+        assert kwargs == {"host": "0.0.0.0", "port": 9000}
 
-    def test_server_info_version_on_sdk2(self):
+    def test_server_info_version(self):
         from junos_mcp import __version__
-        from junos_mcp.server import MCP_SDK_MAJOR, mcp
+        from junos_mcp.server import mcp
 
-        if MCP_SDK_MAJOR >= 2:
-            assert getattr(mcp, "version", None) == __version__
+        assert getattr(mcp, "version", None) == __version__
