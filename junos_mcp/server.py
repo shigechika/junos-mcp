@@ -17,6 +17,7 @@ module, so the MCP STDIO JSON-RPC channel is safe by construction.
 
 import argparse
 import datetime
+import math
 import os
 import os.path
 import re
@@ -127,6 +128,10 @@ def _init_globals(config_path: str = "") -> str | None:
 # config file is refused instead of silently repointing the job at another fleet.
 _ACTIVE_BRIEF_JOBS = 0
 _ACTIVE_BRIEF_JOBS_LOCK = threading.Lock()
+_LAST_HOLD_AT = 0.0
+# A hold is never kept longer than this: a worker stuck on an unresponsive device cannot
+# lock out a config switch until the process restarts.
+_HOLD_MAX_SECONDS = 900.0
 
 
 def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
@@ -135,7 +140,7 @@ def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
     With ``reserve_job`` the config selection and the reservation that blocks later
     switches happen under one lock, so no other call can switch in between.
     """
-    global _ACTIVE_BRIEF_JOBS
+    global _ACTIVE_BRIEF_JOBS, _LAST_HOLD_AT
     with _ACTIVE_BRIEF_JOBS_LOCK:
         # 既に初期化済みで同じ config の場合は再初期化しない
         already = (
@@ -144,6 +149,8 @@ def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
             and (not config_path or common.args.config == config_path)
         )
         if not already:
+            if _ACTIVE_BRIEF_JOBS and time.monotonic() - _LAST_HOLD_AT >= _HOLD_MAX_SECONDS:
+                _ACTIVE_BRIEF_JOBS = 0  # stale holds from workers that never returned
             if _ACTIVE_BRIEF_JOBS and common.config is not None:
                 return (
                     "Error: a daily_brief sweep is still running with the current config; "
@@ -154,6 +161,7 @@ def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
                 return err
         if reserve_job:
             _ACTIVE_BRIEF_JOBS += 1
+            _LAST_HOLD_AT = time.monotonic()
     return None
 
 
@@ -1514,6 +1522,8 @@ def _deadline_seconds() -> float | None:
         secs = float(raw)
     except ValueError:
         return _DEADLINE_DEFAULT
+    if not math.isfinite(secs):
+        return _DEADLINE_DEFAULT  # nan / inf must neither disable nor overflow the budget
     return secs if secs > 0 else None
 
 
@@ -1544,11 +1554,12 @@ def _run_bounded(func, targets: list[str], max_workers: int, deadline: float | N
     finally:
         # Workers still connecting keep using the process-global config after we return:
         # hold it until each one finishes (a cancelled, never-started one releases at once).
-        global _ACTIVE_BRIEF_JOBS
+        global _ACTIVE_BRIEF_JOBS, _LAST_HOLD_AT
         for fut in future_to_target:
             if not fut.done():
                 with _ACTIVE_BRIEF_JOBS_LOCK:
                     _ACTIVE_BRIEF_JOBS += 1
+                    _LAST_HOLD_AT = time.monotonic()
                 fut.add_done_callback(_release_config_hold)
         executor.shutdown(wait=False, cancel_futures=True)
     return results, [t for t in targets if t not in results]

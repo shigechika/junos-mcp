@@ -2120,3 +2120,27 @@ class TestBriefJobReservation:
         assert out["status"] == "running"
         with srv._JOBS_LOCK:
             srv._JOBS.clear()
+
+
+class TestDeadlineAndHoldEdges:
+    def test_nonfinite_deadline_falls_back_to_the_default(self, monkeypatch):
+        from junos_mcp.server import _deadline_seconds
+
+        for raw in ("nan", "inf", "-inf"):
+            monkeypatch.setenv("JUNOS_DEADLINE", raw)
+            assert _deadline_seconds() == 45.0
+
+    def test_a_stale_hold_does_not_lock_out_a_config_switch(self, mock_config, monkeypatch):
+        import junos_mcp.server as srv
+
+        with srv._ACTIVE_BRIEF_JOBS_LOCK:
+            srv._ACTIVE_BRIEF_JOBS = 1
+            srv._LAST_HOLD_AT = srv.time.monotonic() - srv._HOLD_MAX_SECONDS - 1
+        try:
+            with patch("junos_mcp.server._init_globals", return_value=None) as init:
+                assert srv._ensure_config("/other/config.ini") is None
+            init.assert_called_once()
+            assert srv._ACTIVE_BRIEF_JOBS == 0
+        finally:
+            with srv._ACTIVE_BRIEF_JOBS_LOCK:
+                srv._ACTIVE_BRIEF_JOBS = 0
