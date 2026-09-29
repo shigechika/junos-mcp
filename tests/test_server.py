@@ -2053,7 +2053,7 @@ class TestBriefJobConfigGuard:
         try:
             with patch("junos_mcp.server._init_globals") as init:
                 err = srv._ensure_config("/some/other/config.ini")
-            assert err and "background job is running" in err
+            assert err and "still running" in err
             init.assert_not_called()
             assert srv._ensure_config("") is None  # the loaded config is still usable
         finally:
@@ -2072,3 +2072,51 @@ class TestBriefJobConfigGuard:
                     break
                 time.sleep(0.05)
         assert srv._ACTIVE_BRIEF_JOBS == 0
+
+
+class TestBriefJobReservation:
+    def test_reserve_and_switch_is_atomic(self, mock_config):
+        import junos_mcp.server as srv
+
+        assert srv._ensure_config("", reserve_job=True) is None
+        try:
+            assert srv._ACTIVE_BRIEF_JOBS == 1
+            err = srv._ensure_config("/other/config.ini")
+            assert err and "still running" in err
+        finally:
+            srv._release_config_hold()
+        assert srv._ACTIVE_BRIEF_JOBS == 0
+
+    def test_timed_out_workers_hold_the_config_until_they_finish(self, mock_config):
+        import threading
+
+        import junos_mcp.server as srv
+
+        gate = threading.Event()
+        try:
+            results, pending = srv._run_bounded(lambda h: (gate.wait(5), {"hostname": h})[1], ["a"], 1, 0.2)
+            assert pending == ["a"]
+            assert srv._ACTIVE_BRIEF_JOBS == 1  # the stuck worker still holds the config
+            assert "still running" in (srv._ensure_config("/other/config.ini") or "")
+        finally:
+            gate.set()
+        import time
+
+        for _ in range(50):
+            if srv._ACTIVE_BRIEF_JOBS == 0:
+                break
+            time.sleep(0.05)
+        assert srv._ACTIVE_BRIEF_JOBS == 0
+
+    def test_finished_jobs_do_not_block_new_starts(self, mock_config):
+        import junos_mcp.server as srv
+
+        with srv._JOBS_LOCK:
+            srv._JOBS.clear()
+            for i in range(srv._JOBS_MAX):
+                srv._JOBS[f"old{i}"] = {"status": "done", "created": 0.0, "finished": float(i)}
+        with patch("junos_mcp.server._daily_brief_impl", return_value="B"):
+            out = daily_brief_start()
+        assert out["status"] == "running"
+        with srv._JOBS_LOCK:
+            srv._JOBS.clear()

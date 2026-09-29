@@ -129,22 +129,39 @@ _ACTIVE_BRIEF_JOBS = 0
 _ACTIVE_BRIEF_JOBS_LOCK = threading.Lock()
 
 
-def _ensure_config(config_path: str) -> str | None:
-    """Initialize globals if needed. Return error string or None."""
-    # 既に初期化済みで同じ config の場合はスキップ
-    if (
-        common.config is not None
-        and common.args is not None
-        and (not config_path or common.args.config == config_path)
-    ):
-        return None
+def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
+    """Initialize globals if needed. Return error string or None.
+
+    With ``reserve_job`` the config selection and the reservation that blocks later
+    switches happen under one lock, so no other call can switch in between.
+    """
+    global _ACTIVE_BRIEF_JOBS
     with _ACTIVE_BRIEF_JOBS_LOCK:
-        if _ACTIVE_BRIEF_JOBS and common.config is not None:
-            return (
-                "Error: a daily_brief background job is running with the current config; "
-                "retry with the same config_path (or none) once it has finished"
-            )
-    return _init_globals(config_path)
+        # 既に初期化済みで同じ config の場合は再初期化しない
+        already = (
+            common.config is not None
+            and common.args is not None
+            and (not config_path or common.args.config == config_path)
+        )
+        if not already:
+            if _ACTIVE_BRIEF_JOBS and common.config is not None:
+                return (
+                    "Error: a daily_brief sweep is still running with the current config; "
+                    "retry with the same config_path (or none) once it has finished"
+                )
+            err = _init_globals(config_path)
+            if err:
+                return err
+        if reserve_job:
+            _ACTIVE_BRIEF_JOBS += 1
+    return None
+
+
+def _release_config_hold(_future=None) -> None:
+    """Undo one hold taken by a background job or a worker still running past a deadline."""
+    global _ACTIVE_BRIEF_JOBS
+    with _ACTIVE_BRIEF_JOBS_LOCK:
+        _ACTIVE_BRIEF_JOBS = max(0, _ACTIVE_BRIEF_JOBS - 1)
 
 
 def _connect_and_run(hostname: str, config_path: str, operation):
@@ -1525,6 +1542,14 @@ def _run_bounded(func, targets: list[str], max_workers: int, deadline: float | N
     except futures.TimeoutError:
         pass
     finally:
+        # Workers still connecting keep using the process-global config after we return:
+        # hold it until each one finishes (a cancelled, never-started one releases at once).
+        global _ACTIVE_BRIEF_JOBS
+        for fut in future_to_target:
+            if not fut.done():
+                with _ACTIVE_BRIEF_JOBS_LOCK:
+                    _ACTIVE_BRIEF_JOBS += 1
+                fut.add_done_callback(_release_config_hold)
         executor.shutdown(wait=False, cancel_futures=True)
     return results, [t for t in targets if t not in results]
 
@@ -1663,6 +1688,17 @@ def _reap_jobs_locked() -> None:
         del _JOBS[jid]
 
 
+def _evict_finished_locked() -> None:
+    """When at capacity, drop the oldest finished jobs so only running ones count toward the cap."""
+    if len(_JOBS) < _JOBS_MAX:
+        return
+    finished = sorted((v["finished"], j) for j, v in _JOBS.items() if v.get("finished") is not None)
+    for _, jid in finished:
+        if len(_JOBS) < _JOBS_MAX:
+            break
+        del _JOBS[jid]
+
+
 def _finish_job(job_id: str, payload: dict) -> None:
     with _JOBS_LOCK:
         job = _JOBS.get(job_id)
@@ -1672,15 +1708,13 @@ def _finish_job(job_id: str, payload: dict) -> None:
 
 
 def _run_brief_job(job_id: str, args: tuple) -> None:
-    global _ACTIVE_BRIEF_JOBS
     try:
         _finish_job(job_id, {"status": "done", "result": _daily_brief_impl(*args, None)})
     except Exception as exc:
         # Only the type: the message may embed hostnames or paths.
         _finish_job(job_id, {"status": "error", "error": type(exc).__name__})
     finally:
-        with _ACTIVE_BRIEF_JOBS_LOCK:
-            _ACTIVE_BRIEF_JOBS -= 1
+        _release_config_hold()
 
 
 @mcp.tool()
@@ -1713,18 +1747,17 @@ def daily_brief_start(
         max_workers: Devices checked in parallel (default 10).
         config_path: Path to config.ini (empty uses the default search).
     """
-    global _ACTIVE_BRIEF_JOBS
-    err = _ensure_config(config_path)
+    err = _ensure_config(config_path, reserve_job=True)
     if err:
         return {"error": err}
     job_id = secrets.token_hex(8)
     with _JOBS_LOCK:
         _reap_jobs_locked()
+        _evict_finished_locked()
         if len(_JOBS) >= _JOBS_MAX:
-            return {"status": "rejected", "error": f"too many brief jobs (>= {_JOBS_MAX}); retry shortly"}
+            _release_config_hold()
+            return {"status": "rejected", "error": f"too many running brief jobs (>= {_JOBS_MAX}); retry shortly"}
         _JOBS[job_id] = {"status": "running", "created": time.monotonic()}
-    with _ACTIVE_BRIEF_JOBS_LOCK:
-        _ACTIVE_BRIEF_JOBS += 1
     thread = threading.Thread(
         target=_run_brief_job,
         args=(job_id, (hostnames, tags, since_hours, route_baseline, max_workers, config_path)),
@@ -1736,8 +1769,7 @@ def daily_brief_start(
     except RuntimeError as exc:
         with _JOBS_LOCK:
             _JOBS.pop(job_id, None)
-        with _ACTIVE_BRIEF_JOBS_LOCK:
-            _ACTIVE_BRIEF_JOBS -= 1
+        _release_config_hold()
         return {"status": "error", "error": type(exc).__name__}
     return {"job_id": job_id, "status": "running", "poll_with": "daily_brief_result", "poll_after_seconds": 5}
 
