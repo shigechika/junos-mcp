@@ -6,14 +6,6 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
-    ignore:
-      # mcp is pinned below 2 on purpose: SDK 2.0 was a breaking rewrite that took
-      # down every server in this fleet when it shipped, and the 2.x server also
-      # rejects the requests the mcp-stdio gateway forwards ("handshake protocol
-      # era"), so a 2.x install answers nothing behind the gateway. junos_mcp/server.py
-      # still imports on 2.x, but the pin stays until that is resolved.
-      - dependency-name: "mcp"
-        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

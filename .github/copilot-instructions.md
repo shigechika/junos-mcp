@@ -4,7 +4,7 @@
 [junos-ops](https://github.com/shigechika/junos-ops) (a Juniper JUNOS CLI
 tool/library) to AI assistants over **stdio** (default) or
 **streamable-http** transport. Built on the official `mcp` Python SDK's
-`FastMCP` (`junos_mcp/server.py`; the dependency is pinned `mcp<2`, see .github/dependabot.yml. The import also works on 2.x, where the class is `MCPServer`), with per-host NETCONF connection pooling
+`FastMCP` (`junos_mcp/server.py`; the dependency is `mcp>=1.2,<3`; on 2.x the class is `MCPServer`, imported under the `FastMCP` name), with per-host NETCONF connection pooling
 in `junos_mcp/pool.py`.
 
 See `CLAUDE.md` (Japanese) for the authoritative module/tool inventory and
