@@ -15,6 +15,8 @@ string — no ``contextlib.redirect_stdout`` is needed anywhere in this
 module, so the MCP STDIO JSON-RPC channel is safe by construction.
 """
 
+import functools
+import inspect
 import argparse
 import datetime
 import math
@@ -29,6 +31,8 @@ from pprint import pformat
 
 from lxml import etree
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 
 from jnpr.junos.utils.config import Config
 from junos_ops import common
@@ -69,7 +73,51 @@ _RE_FAULT_STATES = {"fault", "fail", "failed", "offline", "absent", "empty", "te
 # routing-instance tables ("VRF.inet.0:", "mgmt_junos.inet.0:") out.
 _ROUTE_INET0_RE = re.compile(r"^inet\.0:\s+(\d+) destinations", re.MULTILINE)
 
-mcp = MCPServer("junos-mcp", version=__version__)
+def _expose_errors(fn):
+    """Wrap a tool so any exception reaches the model as a ToolError with its message.
+
+    mcp 1.x returned the exception text for every failing tool. mcp 2.x hides it
+    (the model sees only "Error executing tool <name>") unless a ToolError is raised.
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except (ToolError, MCPError):
+                raise
+            except Exception as exc:
+                raise ToolError(str(exc) or type(exc).__name__) from exc
+
+    else:
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except (ToolError, MCPError):
+                raise
+            except Exception as exc:
+                raise ToolError(str(exc) or type(exc).__name__) from exc
+
+    return wrapper
+
+
+class _Server(MCPServer):
+    """MCPServer whose tools report their exception messages (see _expose_errors)."""
+
+    def tool(self, *args, **kwargs):
+        register = super().tool(*args, **kwargs)
+
+        def decorator(fn):
+            register(_expose_errors(fn))
+            return fn
+
+        return decorator
+
+
+mcp = _Server("junos-mcp", version=__version__)
 
 
 def _resolve_config_path(config_path: str) -> str:
