@@ -310,6 +310,8 @@ mcp-stdio が OAuth 2.1 認証（RFC 8414 ディスカバリ、RFC 7591 動的�
 
 OAuth プロバイダの設定を含む詳細は [mcp-stdio README](https://github.com/shigechika/mcp-stdio) を参照してください。
 
+> junos-mcp を `mcp-stdio serve`（ゲートウェイ方式）から起動し、MCP SDK 2.x で動かす場合は mcp-stdio 0.43.7 以降を使ってください。それ以前のゲートウェイは 2.x のサーバーが拒否するリクエストのエンベロープを転送するため、その場合は `mcp<2` でインストールしてください。
+
 ### MCP Inspector（開発用）
 
 ```bash
