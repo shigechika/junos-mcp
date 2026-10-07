@@ -233,11 +233,14 @@ PROBES: dict[str, Probe] = {
         must_not_match=NO_ERROR,
         timeout=900,
     ),
+    # Returns {"job_id", "status"}: a handle, not rows, so the row count is waived.
     "daily_brief_start": Probe(
         args_factory=_first_host_as_target,
         args={"max_workers": MAX_WORKERS, "since_hours": 18},
-        must_match=(r"job_id", r"running"),
+        require_keys=("job_id", "status"),
+        must_match=(r'"status": "running"',),
         must_not_match=NO_ERROR,
+        allow_empty=True,
     ),
     "daily_brief_result": Probe(skip="needs the job id returned by daily_brief_start; covered by the unit tests"),
     # -- tools that change a device: never exercised -------------------------

@@ -265,3 +265,17 @@ def test_in_process_result_decodes_to_plain_data_on_the_installed_sdk():
     decoded = smoke_test._decode(raw)
     assert isinstance(decoded, dict)
     assert decoded["service"] == "junos-mcp"
+
+
+def test_daily_brief_start_probe_accepts_the_job_handle():
+    """daily_brief_start answers {"job_id", "status"}: a handle with no rows to count."""
+    from datetime import date
+
+    from smoke_harness import evaluate  # noqa: E402 - needs the sys.path line above
+
+    probe = smoke_probes.PROBES["daily_brief_start"]
+    ok = evaluate("daily_brief_start", probe, {"job_id": "abc123", "status": "running"}, date(2026, 10, 8))
+    assert ok.status == "OK", ok
+    rejected = {"status": "rejected", "error": "too many running brief jobs"}
+    assert evaluate("daily_brief_start", probe, rejected, date(2026, 10, 8)).status == "FAIL"
+    assert evaluate("daily_brief_start", probe, {"status": "running"}, date(2026, 10, 8)).status == "FAIL"
