@@ -1636,7 +1636,9 @@ class TestConfigPathNormalised:
 
     @pytest.fixture
     def home_config(self, mock_config, tmp_path, monkeypatch):
+        # os.path.expanduser reads USERPROFILE on Windows and HOME elsewhere.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         (tmp_path / "inv.ini").write_text("[rt1.example.jp]\n")
         common.args.config = str(tmp_path / "inv.ini")
         return "~/inv.ini"
