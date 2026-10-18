@@ -26,6 +26,9 @@
 | `get_config` | デバイス設定の取得（text/set/xml 形式） | 要 |
 | `get_config_diff` | rollback バージョンとの設定差分表示 | 要 |
 | `push_config` | **書き込み。** commit confirmed + ヘルスチェック付きの設定投入 | 要 |
+| `push_config_start` / `push_config_result` | **書き込み。** 同じ投入をバックグラウンドで実行（1 呼び出しを約 60 秒で切るホスト型クライアントや，commit の遅い機種（SRX ブランチ）向け）。`push_config_start` が commit を待たずに差分と `job_id` を返し（commit は差分を取ったのと同じロック済みセッションで続く），`push_config_result` を `running` でなくなるまで呼ぶ | 要 |
+
+**RPC タイムアウトと 1 呼び出しの期限。** load/commit の RPC はすべて，ホストの `config.ini` の `timeout`，無ければ junos-ops の機種別既定値（SRX ブランチ機（SRX300/320/340/345 など。commit が 30 秒を超えることがある）は 180 秒，それ以外は 120 秒）で実行し，縮めることはありません。`JUNOS_DEADLINE`（既定 45 秒，0 で無効）が有効なとき，`push_config` は投入をバックグラウンドのジョブとして走らせ，期限の少し手前まで待ちます。終われば期限なしのときと同じ答えを，終わらなければ `Still running` と `job_id` を返すので，`push_config_result` で結果を取ります。`push_config_start` は commit を待たずに差分と `job_id` を返します。ジョブは差分を取ったのと同じロック済みのセッションで commit するので，commit されるのは返した差分そのものです。`commit confirmed` を送った後の失敗は，保留中かもしれない commit として報告し，`confirm_timeout` 分後に機器側でロールバックされることを示します。同じホストへの投入は同時に 1 本だけで，2 本目は拒否します。投入中のホストへのほかのツールは期限まで待ち，それでも終わらなければ `host busy` を返します。
 
 ### アップグレード操作
 

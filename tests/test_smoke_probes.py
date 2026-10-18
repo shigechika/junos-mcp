@@ -58,6 +58,7 @@ BOUNDING_ARGS = {"max_workers", "since_hours"}
 #: Tools that can change a device. The smoke test must never call these.
 STATE_CHANGING = {
     "push_config",
+    "push_config_start",
     "copy_package",
     "install_package",
     "rollback_package",

@@ -25,7 +25,7 @@ junos_mcp/
 ├── __init__.py         # パッケージ定義、__version__
 ├── __main__.py         # python -m junos_mcp 対応
 ├── pool.py             # per-host NETCONF 接続プール（ConnectionPool、get_pool）
-└── server.py           # MCPServer サーバー定義、24ツール実装
+└── server.py           # MCPServer サーバー定義、28ツール実装
 tests/
 ├── __init__.py
 ├── test_pool.py                # 27 ユニットテスト（ConnectionPool）
@@ -43,6 +43,7 @@ README.ja.md            # 日本語版
 
 - `ConnectionPool` — per-host NETCONF 接続プール。`acquire(hostname, config_path)` context manager で checkout/checkin。per-host `threading.Lock` を操作全体で保持し PyEZ `Device` のスレッドセーフ問題を回避。アイドルタイムアウト超過・`dev.connected==False` で自動退場・再接続。
 - `PoolConnectionError` — 接続失敗時に `acquire()` が raise する例外。
+- `PoolBusyError` — `acquire(timeout=...)` で per-host lock が時間内に空かなかったときに raise する例外。`_connect_and_run` は push 以外の呼び出しで、`JUNOS_DEADLINE` の残りを timeout に渡し「host busy」を返す（push の確認と lock 取得の間に push が lock を取っても無期限に待たない）
 - `get_pool()` — モジュールレベルシングルトンを lazy init して返す。`JUNOS_MCP_POOL=0` で `None` を返す（プール無効）。
 - 環境変数: `JUNOS_MCP_POOL`（無効化）・`JUNOS_MCP_POOL_IDLE`（アイドルタイムアウト秒、デフォルト 60）・`JUNOS_MCP_POOL_CONNECT_ATTEMPTS`（一過性接続失敗のリトライ回数、デフォルト 2＝1 回リトライ）・`JUNOS_MCP_POOL_CONNECT_DELAY`（リトライ間隔秒、デフォルト 1.0）
 - 接続リトライの不変条件（PR #37）: リトライ対象は `_RETRYABLE_CONNECT_ERRORS`（`ConnectError` / `ConnectTimeoutError` のみ）に限定。`ConnectAuthError`（認証失敗）は**意図的に除外** — 誤った資格情報でリトライするとアカウントロックの恐れがあるため即座に fail-fast する。リトライの sleep は per-host `entry.lock` を保持したまま実行する（設計どおり — 同一ホストの呼び出しのみをブロックし他ホストは妨げない）
@@ -65,10 +66,12 @@ README.ja.md            # 日本語版
 - `run_show_commands` — 複数コマンドを1セッションで順次実行（`show.run_cli_batch()`、`output_format` 対応）
 - `run_show_command_batch` — 複数デバイスに並列実行（`common.run_parallel()`）
 
-#### MCP ツール — 設定管理（3）
+#### MCP ツール — 設定管理（5）
 - `get_config` — デバイス設定取得（text/set/xml、`dev.rpc.get_config()`）
 - `get_config_diff` — rollback バージョンとの差分表示
-- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）
+- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）。RPC タイムアウトは junos-ops の `common.resolve_config_timeout()`（config.ini の `timeout` > 機種別既定値 SRX_BRANCH 180 秒・他 120 秒）で解決し、全段をその値で実行する（期限に合わせて縮めない）。`dev.timeout` は終了後に元へ戻す（プールで再利用されるため）。`JUNOS_DEADLINE`（既定 45 秒、0 で無効）が有効なら push をバックグラウンドジョブとして走らせ、期限−5 秒まで待つ。終われば同じ答え、終わらなければ「Still running」と job_id を返す。0 なら従来どおり同期。commit confirmed を送った後の失敗は実際に送った段に基づいて報告する（commit confirmed RPC の失敗＝保留中かもしれない、ヘルスチェック例外＝保留中、確定 commit の失敗＝`show system commit` で確認）。同一ホストへの push は `_PUSH_ACTIVE_HOSTS`（host→job_id）で 1 本に制限し、ほかのツールは `_connect_and_run` で期限まで待って「host busy」を返す（プールの lock 待ちも同じ期限で打ち切る）
+- `push_config_start` — push_config のバックグラウンド版。ジョブのスレッドが lock → load → diff を行い差分を公開（呼び出し側は期限まで待って差分を返す）、同じロック済みセッションのまま commit_check → commit confirmed → ヘルスチェック → 確定 → unlock へ進む（再 load・再 diff なし。commit されるのは返した差分そのもの）。dry_run=True（既定）はジョブの終了を待って `status: dry_run` で差分を返す。config hold はジョブ開始前に取りジョブ終了まで保持し、push の hold は `_ACTIVE_BRIEF_JOBS` と別の `_ACTIVE_PUSH_HOLDS` で数え、`_HOLD_MAX_SECONDS` で stale 扱いしない（stale のリセットや遅れて戻った brief ワーカーの解放は brief 側の数だけを減らす）。途中で落ちても commit confirmed が機器側で自動ロールバック
+- `push_config_result` — ジョブの状態（running / done / dry_run / failed / error / unknown）。running 中も差分が出ていれば `diff` を返す。`daily_brief_result` とはジョブ種別で分離
 
 #### MCP ツール — アップグレード操作（8）
 - `check_upgrade_readiness` — アップグレード準備状況
@@ -118,7 +121,7 @@ junos-ops は `common.args`（argparse.Namespace）と `common.config`（ConfigP
 2. 環境変数 `JUNOS_OPS_CONFIG`
 3. デフォルト探索（`./config.ini` → `~/.config/junos-ops/config.ini`）
 
-`~` はすべての経路で `os.path.expanduser()` により展開される。
+`~` はすべての経路で `os.path.expanduser()` により展開される。`_ensure_config` は読み込み済みの config と同じかを `expanduser` ＋ `realpath` で比べる（`~/...` と展開済みのパスを同じものとして扱い、ジョブの hold 中に自分自身を拒否しないため）。
 
 ## 開発環境セットアップ
 
@@ -134,7 +137,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-157 テスト（グローバル初期化、config パス解決、接続プール、24 ツールの動作検証、バージョン整合性）。
+157 テスト（グローバル初期化、config パス解決、接続プール、28 ツールの動作検証、バージョン整合性）。
 
 `scripts/` にはライブスモークテストがある。`smoke_test.py`（CLI）、ツールごとの spec
 `smoke_probes.py`、そしてサーバー非依存のエンジン `smoke_harness.py` — エンジンはこの

@@ -245,6 +245,8 @@ PROBES: dict[str, Probe] = {
     "daily_brief_result": Probe(skip="needs the job id returned by daily_brief_start; covered by the unit tests"),
     # -- tools that change a device: never exercised -------------------------
     "push_config": Probe(skip="writes configuration to a production router"),
+    "push_config_start": Probe(skip="starts a background job that writes configuration to a production router"),
+    "push_config_result": Probe(skip="needs the job id returned by push_config_start; covered by the unit tests"),
     "copy_package": Probe(skip="copies a multi-gigabyte image to the device"),
     "install_package": Probe(skip="installs a JUNOS image"),
     "rollback_package": Probe(skip="rolls the device back to its pending version"),

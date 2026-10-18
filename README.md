@@ -37,6 +37,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | `get_config` | Get device configuration (text/set/xml format) | Yes |
 | `get_config_diff` | Show config diff against a rollback version | Yes |
 | `push_config` | Push config with commit confirmed + health check | Yes |
+| `push_config_start` / `push_config_result` | The same push as a background job, for hosted clients that cut a call at about 60 s and for slow-committing models (SRX branch): `push_config_start` returns the diff and a `job_id` without waiting for the commit, which runs on the same locked session; poll `push_config_result` until it is no longer `running` | Yes |
 
 ### Upgrade Operations
 
@@ -90,6 +91,22 @@ The AI assistant must explicitly set `dry_run=False` to make changes.
 - **`no_commit=True`** — issues `commit confirmed` but intentionally skips the final commit.
   JUNOS auto-rolls back after `confirm_timeout` minutes. Useful for restarting services that
   lack a `request ...restart` command (e.g. syslog daemon on EX3400 post-upgrade).
+
+**RPC timeout and the per-call deadline.** Every load/commit RPC uses
+`timeout` from the host's `config.ini` section, else the junos-ops model
+default: 180 s on SRX branch models (SRX300/320/340/345 and the like, whose
+commits can exceed 30 s), 120 s otherwise. It is never shortened. With
+`JUNOS_DEADLINE` set (default 45 s; 0 disables), `push_config` runs the push
+as a background job and waits for it until shortly before the deadline: if it
+finishes, the answer is the same as without a deadline; if not, the answer
+says `Still running` with a `job_id` to poll with `push_config_result`.
+`push_config_start` returns the diff and the `job_id` without waiting for the
+commit; the job loads and diffs the change and then commits on the same locked
+session, so what is committed is exactly the diff returned. A failure after
+`commit confirmed` has been sent is reported as a possibly pending commit that
+rolls back on the device after `confirm_timeout` minutes. Only one push per
+host runs at a time; a second one is refused, and other tools on that host
+wait at most until the deadline and then answer `host busy`.
 
 ## Requirements
 
@@ -233,7 +250,7 @@ Five tools change device state. Everything else only reads. These are the same f
 
 | Tool | API call | Permission gate |
 |---|---|---|
-| `push_config` | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → health check → final `commit` → `unlock` | The `config.ini` account for the target host needs a JUNOS login class permitting configuration mode and commit — not a read-only/operator class. The exact class name is whatever was provisioned per device in `config.ini`. |
+| `push_config` (and its background form `push_config_start`) | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → health check → final `commit` → `unlock` | The `config.ini` account for the target host needs a JUNOS login class permitting configuration mode and commit — not a read-only/operator class. The exact class name is whatever was provisioned per device in `config.ini`. |
 | `copy_package` | `junos_ops.upgrade.copy()` — SCPs the firmware package to the device with checksum verification and pre-copy storage cleanup | Same account needs file-copy / storage-write access (SCP to device flash). |
 | `install_package` | `junos_ops.upgrade.install()` — version check, pending-rollback check, copy + checksum, clear reboot schedule, rescue-config save, then PyEZ `SW.install()` (or `request system software add` via the `unlink` CLI path on low-flash EX2300/EX3400) | Requires software-installation privilege — JUNOS `maintenance`-class or superuser login class. |
 | `rollback_package` | `junos_ops.upgrade.rollback()` — equivalent of `request system software rollback`, only after confirming a pending version exists | Same elevated software-maintenance privilege as `install_package`. |
@@ -366,7 +383,7 @@ uv run python scripts/smoke_test.py
 uv run python scripts/smoke_test.py --only facts --traceback
 ```
 
-- **Read-only.** `push_config`, `copy_package`, `install_package`,
+- **Read-only.** `push_config`, `push_config_start`, `copy_package`, `install_package`,
   `rollback_package` and `schedule_reboot` are skipped by name, and a test
   enforces that. `collect_rsi` / `collect_rsi_batch` are skipped too — they
   change nothing, but they are minutes of RE CPU and a file per device for an

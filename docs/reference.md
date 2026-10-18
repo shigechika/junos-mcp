@@ -26,6 +26,23 @@
 | `get_config` | Device configuration (text/set/xml format) | Yes |
 | `get_config_diff` | Config diff against a rollback version | Yes |
 | `push_config` | **Writes.** Push config with commit confirmed + health check | Yes |
+| `push_config_start` / `push_config_result` | **Writes.** The same push as a background job, for hosted clients that cut a call at about 60 s and for slow-committing models (SRX branch): `push_config_start` returns the diff and a `job_id` without waiting for the commit, which runs on the same locked session; poll `push_config_result` until it is no longer `running` | Yes |
+
+**RPC timeout and the per-call deadline.** Every load/commit RPC uses
+`timeout` from the host's `config.ini` section, else the junos-ops model
+default: 180 s on SRX branch models (SRX300/320/340/345 and the like, whose
+commits can exceed 30 s), 120 s otherwise. It is never shortened. With
+`JUNOS_DEADLINE` set (default 45 s; 0 disables), `push_config` runs the push
+as a background job and waits for it until shortly before the deadline: if it
+finishes, the answer is the same as without a deadline; if not, the answer
+says `Still running` with a `job_id` to poll with `push_config_result`.
+`push_config_start` returns the diff and the `job_id` without waiting for the
+commit; the job loads and diffs the change and then commits on the same locked
+session, so what is committed is exactly the diff returned. A failure after
+`commit confirmed` has been sent is reported as a possibly pending commit that
+rolls back on the device after `confirm_timeout` minutes. Only one push per
+host runs at a time; a second one is refused, and other tools on that host
+wait at most until the deadline and then answer `host busy`.
 
 ### Upgrade operations
 

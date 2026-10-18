@@ -33,6 +33,7 @@ Juniper Networks デバイスの操作を、MCP 対応の AI アシスタント�
 | `get_config` | デバイス設定の取得（text/set/xml 形式） | 要 |
 | `get_config_diff` | rollback バージョンとの設定差分表示 | 要 |
 | `push_config` | commit confirmed + ヘルスチェック付きの設定投入 | 要 |
+| `push_config_start` / `push_config_result` | 同じ投入をバックグラウンドで実行（1 呼び出しを約 60 秒で切るホスト型クライアントや，commit の遅い機種（SRX ブランチ）向け）。`push_config_start` が commit を待たずに差分と `job_id` を返し（commit は差分を取ったのと同じロック済みセッションで続く），`push_config_result` を `running` でなくなるまで呼ぶ | 要 |
 
 ### アップグレード操作
 
@@ -79,6 +80,8 @@ Juniper Networks デバイスの操作を、MCP 対応の AI アシスタント�
 - **commit confirmed** — タイムアウト付き（確認されなければ自動ロールバック）
 - **フォールバック付きヘルスチェック** — commit 後に ping、NETCONF uptime プローブ、または任意の CLI コマンドで確認
 - **自動ロールバック** — ヘルスチェック失敗時に commit を確認せず、タイマー満了で自動ロールバック
+
+**RPC タイムアウトと 1 呼び出しの期限。** load/commit の RPC はすべて，ホストの `config.ini` の `timeout`，無ければ junos-ops の機種別既定値（SRX ブランチ機（SRX300/320/340/345 など。commit が 30 秒を超えることがある）は 180 秒，それ以外は 120 秒）で実行し，縮めることはありません。`JUNOS_DEADLINE`（既定 45 秒，0 で無効）が有効なとき，`push_config` は投入をバックグラウンドのジョブとして走らせ，期限の少し手前まで待ちます。終われば期限なしのときと同じ答えを，終わらなければ `Still running` と `job_id` を返すので，`push_config_result` で結果を取ります。`push_config_start` は commit を待たずに差分と `job_id` を返します。ジョブは差分を取ったのと同じロック済みのセッションで commit するので，commit されるのは返した差分そのものです。`commit confirmed` を送った後の失敗は，保留中かもしれない commit として報告し，`confirm_timeout` 分後に機器側でロールバックされることを示します。同じホストへの投入は同時に 1 本だけで，2 本目は拒否します。投入中のホストへのほかのツールは期限まで待ち，それでも終わらなければ `host busy` を返します。
 
 ## 必要要件
 
@@ -209,7 +212,7 @@ junos-ops と同じ `config.ini` を使用します。詳細は [junos-ops READM
 
 | ツール | API 呼び出し | 権限ゲート |
 |---|---|---|
-| `push_config` | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → ヘルスチェック → 最終 `commit` → `unlock` | 対象ホストの `config.ini` アカウントに、configuration mode と commit を許す JUNOS login class が必要（読み取り専用/operator クラスでは不可）。クラス名自体はホストごとに `config.ini` で用意したもの。 |
+| `push_config`（バックグラウンド版の `push_config_start` を含む） | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → ヘルスチェック → 最終 `commit` → `unlock` | 対象ホストの `config.ini` アカウントに、configuration mode と commit を許す JUNOS login class が必要（読み取り専用/operator クラスでは不可）。クラス名自体はホストごとに `config.ini` で用意したもの。 |
 | `copy_package` | `junos_ops.upgrade.copy()` — チェックサム検証と事前クリーンアップ付きでファームウェアパッケージを SCP コピー | 同じアカウントにファイルコピー/ストレージ書き込み権限（デバイスの flash への SCP）が必要。 |
 | `install_package` | `junos_ops.upgrade.install()` — バージョン確認、保留中ロールバックの確認、コピー+チェックサム、リブートスケジュールのクリア、rescue-config 保存の後、PyEZ `SW.install()`（低容量な EX2300/EX3400 向けには `unlink` フラグ経由の `request system software add`） | ソフトウェアインストール権限が必要 — JUNOS `maintenance` クラスまたは superuser login class。 |
 | `rollback_package` | `junos_ops.upgrade.rollback()` — 保留中バージョンの存在を確認した上での `request system software rollback` 相当 | `install_package` と同じ、昇格されたソフトウェアメンテナンス権限。 |
@@ -339,7 +342,7 @@ uv run python scripts/smoke_test.py
 uv run python scripts/smoke_test.py --only facts --traceback
 ```
 
-- **読み取り専用**。`push_config`・`copy_package`・`install_package`・
+- **読み取り専用**。`push_config`・`push_config_start`・`copy_package`・`install_package`・
   `rollback_package`・`schedule_reboot` は名前で除外する（テストで強制）。
   `collect_rsi` / `collect_rsi_batch` も除外する — 機器を変更しないが、ここでの検証に
   使わない出力のために RE の CPU を数分間占有し機器ごとにファイルを作るため。

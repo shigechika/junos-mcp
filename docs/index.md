@@ -14,13 +14,13 @@ RSI/SCF diagnostics, and a `daily_brief` health check across a fleet.
 |---|---|
 | Device information | `get_device_facts`, `get_version`, `get_router_list`, `health_check` |
 | CLI command execution | `run_show_command`, `run_show_commands`, `run_show_command_batch` |
-| Configuration management | `get_config`, `get_config_diff`, `push_config` |
+| Configuration management | `get_config`, `get_config_diff`, `push_config`, `push_config_start`, `push_config_result` |
 | Upgrade operations | `check_upgrade_readiness`, `compare_version`, `get_package_info`, `list_remote_files`, `copy_package`, `install_package`, `rollback_package`, `schedule_reboot` |
 | Diagnostics | `collect_rsi`, `collect_rsi_batch` |
 | Pre-flight checks | `check_reachability`, `check_local_inventory`, `check_remote_packages` |
 | Daily operations | `daily_brief` |
 
-**Five tools write to a device:** `push_config`, `copy_package`,
+**Five tools write to a device:** `push_config` (also run as a background job by `push_config_start`), `copy_package`,
 `install_package`, `rollback_package`, `schedule_reboot`. All five default to
 dry-run. Everything else only reads. See
 [Setup](setup.md#write-operations) for what each write tool actually calls
