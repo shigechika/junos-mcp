@@ -41,7 +41,11 @@ and how much time was left, and points to `push_config_start` /
 full timeout and no per-call deadline. If the job dies mid-way, the
 unconfirmed `commit confirmed` rolls back on the device by itself. Only one
 push per host runs at a time; a second one is refused. `dry_run=True` is never
-refused.
+refused. The time left is recomputed before every RPC step: if too little
+remains after `commit_check`, the push stops before `commit confirmed` and
+nothing is committed; if it runs out after `commit confirmed`, the answer says
+`COMMIT CONFIRMED PENDING` and the change rolls back after `confirm_timeout`
+minutes.
 
 ### Upgrade operations
 

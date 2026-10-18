@@ -68,7 +68,7 @@ README.ja.md            # 日本語版
 #### MCP ツール — 設定管理（5）
 - `get_config` — デバイス設定取得（text/set/xml、`dev.rpc.get_config()`）
 - `get_config_diff` — rollback バージョンとの差分表示
-- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）。RPC タイムアウトは junos-ops の `common.resolve_config_timeout()`（config.ini の `timeout` > 機種別既定値 SRX_BRANCH 180 秒・他 60 秒）で解決し `dev.timeout` に設定、終了後に元へ戻す（プールで再利用されるため）。`JUNOS_DEADLINE`（既定 45 秒、0 で無効）が有効なら残り時間−余裕 10 秒に縮め、解決値が 60 秒を超えて収まらないか 30 秒を切るときは何もロックせず拒否して `push_config_start` へ誘導（dry_run は拒否しない）。同一ホストへの push は `_PUSH_ACTIVE_HOSTS` で 1 本に制限
+- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）。RPC タイムアウトは junos-ops の `common.resolve_config_timeout()`（config.ini の `timeout` > 機種別既定値 SRX_BRANCH 180 秒・他 60 秒）で解決し `dev.timeout` に設定、終了後に元へ戻す（プールで再利用されるため）。`JUNOS_DEADLINE`（既定 45 秒、0 で無効）が有効なら残り時間−余裕 10 秒に縮め、解決値が 60 秒を超えて収まらないか 30 秒を切るときは何もロックせず拒否して `push_config_start` へ誘導（dry_run は拒否しない）。残り時間は load・diff・commit_check・commit confirmed・ヘルスチェック・確定の各段の前に計算し直して `dev.timeout` に設定し、commit_check 後に足りなければ commit confirmed の前で止める。commit confirmed 後に尽きたら確定せず「COMMIT CONFIRMED PENDING」（自動ロールバック待ち）と返す。`push_config_start` は config hold を差分の前に取り、ジョブ終了まで保持する（プレビューと別の config で commit しないため）。同一ホストへの push は `_PUSH_ACTIVE_HOSTS` で 1 本に制限
 - `push_config_start` — push_config のバックグラウンド版。dry_run=True（既定）は差分だけ返しジョブを作らない。dry_run=False は差分を同期で返し、commit 以降を期限無し・フルのタイムアウトでスレッド実行（`_JOBS` に `kind="push_config"` で登録、config hold を取る）。途中で落ちても commit confirmed が機器側で自動ロールバック
 - `push_config_result` — ジョブの状態（running / done / failed / error / unknown）。`daily_brief_result` とはジョブ種別で分離
 

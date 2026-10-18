@@ -81,7 +81,7 @@ Juniper Networks デバイスの操作を、MCP 対応の AI アシスタント�
 - **フォールバック付きヘルスチェック** — commit 後に ping、NETCONF uptime プローブ、または任意の CLI コマンドで確認
 - **自動ロールバック** — ヘルスチェック失敗時に commit を確認せず、タイマー満了で自動ロールバック
 
-**RPC タイムアウトと 1 呼び出しの期限。** load/commit の RPC タイムアウトは，ホストの `config.ini` の `timeout`，無ければ junos-ops の機種別既定値（SRX ブランチ機（SRX300/320/340/345 など。commit が 30 秒を超えることがある）は 180 秒，それ以外は 60 秒）です。同期の `push_config` は `JUNOS_DEADLINE`（既定 45 秒，0 で無効）に収まるよう，残り時間に合わせてタイムアウトを縮めます。収まらない長いタイムアウトが要るホスト（SRX ブランチ機，`config.ini` の長い `timeout`）や，残りが 30 秒を切るときは，何もロックせずに拒否し，解決したタイムアウトと残り時間を示して `push_config_start` / `push_config_result` を案内します。この組はタイムアウトを縮めず，1 呼び出しの期限も無しにバックグラウンドで commit します。途中でジョブが止まっても，確定されない `commit confirmed` は機器側で自動的にロールバックします。同じホストへの投入は同時に 1 本だけで，2 本目は拒否します。`dry_run=True` は拒否しません。
+**RPC タイムアウトと 1 呼び出しの期限。** load/commit の RPC タイムアウトは，ホストの `config.ini` の `timeout`，無ければ junos-ops の機種別既定値（SRX ブランチ機（SRX300/320/340/345 など。commit が 30 秒を超えることがある）は 180 秒，それ以外は 60 秒）です。同期の `push_config` は `JUNOS_DEADLINE`（既定 45 秒，0 で無効）に収まるよう，残り時間に合わせてタイムアウトを縮めます。収まらない長いタイムアウトが要るホスト（SRX ブランチ機，`config.ini` の長い `timeout`）や，残りが 30 秒を切るときは，何もロックせずに拒否し，解決したタイムアウトと残り時間を示して `push_config_start` / `push_config_result` を案内します。この組はタイムアウトを縮めず，1 呼び出しの期限も無しにバックグラウンドで commit します。途中でジョブが止まっても，確定されない `commit confirmed` は機器側で自動的にロールバックします。同じホストへの投入は同時に 1 本だけで，2 本目は拒否します。`dry_run=True` は拒否しません。残り時間は RPC の各段の前に計算し直します。`commit_check` の後で時間が足りなければ `commit confirmed` の前で止め，何も commit しません。`commit confirmed` の後で時間が尽きたときは `COMMIT CONFIRMED PENDING` と返し，変更は `confirm_timeout` 分後にロールバックします。
 
 ## 必要要件
 

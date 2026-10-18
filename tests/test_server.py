@@ -1315,6 +1315,131 @@ class TestPushConfigTimeout:
         cu.lock.assert_not_called()
 
 
+class TestPushConfigStepDeadline:
+    """The sync flow recomputes the time left before every RPC step."""
+
+    @staticmethod
+    def _run(dev, cu, clock, hc=_HC_OK, deadline=45.0, **kwargs):
+        import junos_mcp.server as srv
+
+        args = dict(config_file="", set_commands=["set x"], dry_run=False,
+                    confirm_timeout=1, no_commit=False, health_check=None)
+        args.update(kwargs)
+        with (
+            patch("junos_mcp.server._now", side_effect=lambda: clock[0]),
+            patch("junos_mcp.server.Config", return_value=cu),
+            patch(
+                "junos_mcp.server.upgrade._run_health_check",
+                **({"side_effect": hc} if callable(hc) else {"return_value": hc}),
+            ) as mock_hc,
+        ):
+            out = srv._push_config_impl(
+                "rt1.example.jp", dev, args["config_file"], args["set_commands"], args["dry_run"],
+                args["confirm_timeout"], args["no_commit"], args["health_check"], clock[0] + deadline,
+            )
+        return out, mock_hc
+
+    @staticmethod
+    def _cu():
+        cu = MagicMock()
+        cu.diff.return_value = "[edit]\n+  x;"
+        return cu
+
+    def _tick(self, clock, seconds, seen=None, dev=None):
+        def step(*a, **k):
+            if seen is not None:
+                seen.append(dev.timeout)
+            clock[0] += seconds
+        return step
+
+    def test_each_step_gets_the_time_left(self, mock_config):
+        clock = [1000.0]
+        dev = _push_dev("MX")
+        cu = self._cu()
+        seen = []
+        for name in ("lock", "load", "commit_check", "commit"):
+            getattr(cu, name).side_effect = self._tick(clock, 1, seen, dev)
+        cu.diff.side_effect = lambda *a, **k: (seen.append(dev.timeout), "[edit]\n+  x;")[1]
+        out, _ = self._run(dev, cu, clock, hc=lambda *a: (seen.append(dev.timeout), _HC_OK)[1])
+        assert out["ok"] and "permanent" in out["text"]
+        # lock 35, load 34, diff 33, commit_check 33, commit confirmed 32, health 41, confirm 41
+        assert seen == [35, 34, 33, 33, 32, 41, 41]
+        assert dev.timeout == 30
+
+    def test_stops_before_commit_confirmed(self, mock_config):
+        clock = [1000.0]
+        dev = _push_dev("MX")
+        cu = self._cu()
+        cu.commit_check.side_effect = self._tick(clock, 10)
+        out, mock_hc = self._run(dev, cu, clock)
+        assert not out["ok"]
+        assert "Stopped before commit" in out["text"]
+        assert "push_config_start" in out["text"]
+        cu.commit.assert_not_called()
+        cu.rollback.assert_called_once()
+        cu.unlock.assert_called_once()
+        mock_hc.assert_not_called()
+
+    def test_deadline_spent_by_commit_confirmed_reports_pending(self, mock_config):
+        clock = [1000.0]
+        dev = _push_dev("MX")
+        cu = self._cu()
+        cu.commit.side_effect = self._tick(clock, 60)
+        out, mock_hc = self._run(dev, cu, clock, confirm_timeout=3)
+        assert not out["ok"]
+        assert "COMMIT CONFIRMED PENDING" in out["text"]
+        assert "before the health check" in out["text"]
+        assert "auto-rollback in 3 minute(s)" in out["text"]
+        assert cu.commit.call_count == 1
+        mock_hc.assert_not_called()
+        cu.rollback.assert_not_called()
+        cu.unlock.assert_called_once()
+
+    def test_deadline_spent_by_health_check_reports_pending(self, mock_config):
+        clock = [1000.0]
+        dev = _push_dev("MX")
+        cu = self._cu()
+
+        def slow_hc(*a):
+            clock[0] += 60
+            return _HC_OK
+
+        out, mock_hc = self._run(dev, cu, clock, hc=slow_hc)
+        assert "COMMIT CONFIRMED PENDING" in out["text"]
+        assert "before the final commit" in out["text"]
+        assert cu.commit.call_count == 1
+        mock_hc.assert_called_once()
+
+    def test_error_on_final_commit_reports_pending_not_failed(self, mock_config):
+        clock = [1000.0]
+        dev = _push_dev("MX")
+        cu = self._cu()
+        cu.commit.side_effect = [None, Exception("RpcTimeoutError(cmd: commit-configuration)")]
+        out, _ = self._run(dev, cu, clock)
+        assert not out["ok"]
+        assert "COMMIT CONFIRMED PENDING" in out["text"]
+        assert "Config push failed" not in out["text"]
+        assert cu.commit.call_count == 2
+        cu.rollback.assert_not_called()
+
+    def test_no_deadline_uses_full_timeout_every_step(self, mock_config):
+        dev = _push_dev("SRX_BRANCH")
+        cu = self._cu()
+        seen = []
+        cu.commit.side_effect = lambda *a, **k: seen.append(dev.timeout)
+        import junos_mcp.server as srv
+
+        with (
+            patch("junos_mcp.server.Config", return_value=cu),
+            patch("junos_mcp.server.upgrade._run_health_check", return_value=_HC_OK),
+        ):
+            out = srv._push_config_impl(
+                "rt1.example.jp", dev, "", ["set x"], False, 1, False, None, None
+            )
+        assert out["ok"]
+        assert seen == [180, 180]
+
+
 class TestPushConfigJob:
     def _patches(self, dev, cu, hc=_HC_OK):
         return (
@@ -1434,6 +1559,40 @@ class TestPushConfigJob:
         assert "already in progress" in again["error"]
         assert "already in progress" in sync
         assert out["status"] == "done"
+
+    def test_config_switch_between_preview_and_commit_is_refused(self, mock_config, push_state):
+        import junos_mcp.server as srv
+
+        dev = _push_dev("MX")
+        cu = self._cu()
+        attempts = []
+
+        def diff_and_switch(*a, **k):
+            with patch("junos_mcp.server._init_globals") as init:
+                attempts.append(srv._ensure_config("/other/inventory.ini"))
+                assert not init.called
+            return "[edit]\n+  host-name new;"
+
+        cu.diff.side_effect = diff_and_switch
+        p1, p2, p3 = self._patches(dev, cu)
+        with p1 as mock_connect, p2, p3:
+            started = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+            out = _wait_push(started["job_id"])
+        assert attempts and all(a and "still running" in a for a in attempts)
+        assert out["status"] == "done"
+        assert cu.commit.call_count == 2
+        assert common.config is mock_config
+        assert {c.args[0] for c in mock_connect.call_args_list} == {"rt1.example.jp"}
+        assert push_state._ACTIVE_BRIEF_JOBS == 0
+
+    def test_hold_released_when_preview_fails(self, mock_config, push_state):
+        cu = self._cu()
+        cu.lock.side_effect = Exception("locked")
+        p1, p2, p3 = self._patches(_push_dev(), cu)
+        with p1, p2, p3:
+            out = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+        assert out["status"] == "failed"
+        assert push_state._ACTIVE_BRIEF_JOBS == 0
 
     def test_job_kinds_do_not_cross(self, mock_config, push_state):
         with push_state._JOBS_LOCK:
