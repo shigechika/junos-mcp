@@ -1412,7 +1412,7 @@ class TestPushConfigJob:
         assert "dry-run" in out["result"]
         cu.commit.assert_not_called()
         assert not push_state._PUSH_ACTIVE_HOSTS
-        assert push_state._ACTIVE_BRIEF_JOBS == 0
+        assert push_state._ACTIVE_PUSH_HOLDS == 0
 
     def test_no_changes(self, mock_config, push_state):
         cu = _push_cu()
@@ -1460,7 +1460,7 @@ class TestPushConfigJob:
         assert mock_connect.call_count == 1
         cu.lock.assert_called_once()
         cu.load.assert_called_once()
-        assert push_state._ACTIVE_BRIEF_JOBS == 0
+        assert push_state._ACTIVE_PUSH_HOLDS == 0
         assert not push_state._PUSH_ACTIVE_HOSTS
 
     def test_commit_failure(self, mock_config, push_state):
@@ -1471,7 +1471,7 @@ class TestPushConfigJob:
             out = _wait_push(push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)["job_id"])
         assert out["status"] == "failed"
         assert "MAY BE PENDING" in out["result"]
-        assert push_state._ACTIVE_BRIEF_JOBS == 0
+        assert push_state._ACTIVE_PUSH_HOLDS == 0
 
     def test_health_check_failure(self, mock_config, push_state):
         cu = _push_cu()
@@ -1489,7 +1489,7 @@ class TestPushConfigJob:
             out = _wait_push(push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)["job_id"])
         assert out["status"] == "failed"
         assert "lock failed" in out["result"]
-        assert push_state._ACTIVE_BRIEF_JOBS == 0
+        assert push_state._ACTIVE_PUSH_HOLDS == 0
         assert not push_state._PUSH_ACTIVE_HOSTS
 
     def test_unexpected_exception_reports_type_only(self, mock_config, push_state):
@@ -1570,10 +1570,56 @@ class TestPushConfigJob:
                 err = srv._ensure_config("/other/inventory.ini")
             assert err and "still running" in err
             init.assert_not_called()
-            assert srv._ACTIVE_BRIEF_JOBS == 1
+            assert srv._ACTIVE_PUSH_HOLDS == 1
         finally:
             srv._release_push_hold()
         assert srv._ACTIVE_BRIEF_JOBS == 0 and srv._ACTIVE_PUSH_HOLDS == 0
+
+    def test_late_brief_release_does_not_drop_a_push_hold(self, mock_config, push_state):
+        srv = push_state
+        assert srv._ensure_config("", reserve_job=True, push_hold=True) is None
+        try:
+            with srv._ACTIVE_BRIEF_JOBS_LOCK:
+                srv._ACTIVE_BRIEF_JOBS = 1  # a daily_brief worker, long past the stale limit
+                srv._LAST_HOLD_AT = srv.time.monotonic() - srv._HOLD_MAX_SECONDS - 1
+            with patch("junos_mcp.server._init_globals") as init:
+                assert "still running" in srv._ensure_config("/other/inventory.ini")
+                assert srv._ACTIVE_BRIEF_JOBS == 0  # the stale brief hold was dropped
+                srv._release_config_hold()  # ...and that worker returns late
+                assert srv._ACTIVE_BRIEF_JOBS == 0 and srv._ACTIVE_PUSH_HOLDS == 1
+                assert "still running" in srv._ensure_config("/other/inventory.ini")
+            init.assert_not_called()
+        finally:
+            srv._release_push_hold()
+        assert srv._ACTIVE_PUSH_HOLDS == 0
+
+    @pytest.mark.parametrize("owner", [None, "job9"])
+    def test_pool_lock_wait_is_bounded(self, mock_config, push_state, monkeypatch, owner):
+        """A tool that passed the push check before a push took the device still answers in time."""
+        import time
+
+        srv = push_state
+        monkeypatch.setenv("JUNOS_DEADLINE", "0.3")
+        pool = pool_module.get_pool()
+        entry = pool._get_or_create("rt1.example.jp", srv._resolve_config_path(""))
+        entry.lock.acquire()
+        if owner:
+            srv._PUSH_ACTIVE_HOSTS["rt1.example.jp"] = owner
+        try:
+            with (
+                patch("junos_mcp.server._wait_push_host_free", return_value=None),
+                patch("junos_ops.common.connect") as mock_connect,
+            ):
+                t0 = time.monotonic()
+                out = get_config("rt1.example.jp")
+                waited = time.monotonic() - t0
+        finally:
+            entry.lock.release()
+        assert "host busy" in out
+        if owner:
+            assert "push job job9" in out
+        assert waited < 2
+        mock_connect.assert_not_called()
 
     def test_job_kinds_do_not_cross(self, mock_config, push_state):
         with push_state._JOBS_LOCK:

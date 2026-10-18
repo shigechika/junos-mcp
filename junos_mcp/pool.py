@@ -61,6 +61,10 @@ class PoolConnectionError(Exception):
     """Raised by ConnectionPool.acquire when a device connection cannot be opened."""
 
 
+class PoolBusyError(Exception):
+    """Raised by ConnectionPool.acquire when the host's lock is not free within ``timeout``."""
+
+
 class _Entry:
     """State bucket for one pooled host connection."""
 
@@ -92,16 +96,19 @@ class ConnectionPool:
         self._entries: dict[tuple[str, str], _Entry] = {}
 
     @contextmanager
-    def acquire(self, hostname: str, config_path: str) -> Iterator:
+    def acquire(self, hostname: str, config_path: str, timeout: float | None = None) -> Iterator:
         """Yield a connected Device for *hostname*, then return it to the pool.
 
         The per-host lock is held for the entire duration of the ``with``
-        block; concurrent callers for the same host queue behind it.
+        block; concurrent callers for the same host queue behind it, for at
+        most ``timeout`` seconds when it is given (None waits indefinitely).
 
+        :raises PoolBusyError: if the per-host lock is not free within ``timeout``.
         :raises PoolConnectionError: if the device cannot be connected.
         """
         entry = self._get_or_create(hostname, config_path)
-        entry.lock.acquire()
+        if not entry.lock.acquire(timeout=-1 if timeout is None else max(0.0, timeout)):
+            raise PoolBusyError(f"{hostname}: busy")
         try:
             dev = self._get_or_open(entry, hostname)
             yield dev

@@ -565,3 +565,24 @@ class TestGetPool:
         pool = pool_module.get_pool()
         assert pool._connect_attempts == 2
         assert pool._connect_retry_delay == 1.0
+
+
+class TestAcquireTimeout:
+    def test_busy_host_raises_after_timeout(self):
+        import time
+
+        from junos_mcp.pool import ConnectionPool, PoolBusyError
+
+        pool = ConnectionPool()
+        entry = pool._get_or_create("rt1.example.jp", "config.ini")
+        entry.lock.acquire()
+        try:
+            t0 = time.monotonic()
+            with pytest.raises(PoolBusyError):
+                with pool.acquire("rt1.example.jp", "config.ini", timeout=0.1):
+                    pass
+            assert time.monotonic() - t0 < 1
+        finally:
+            entry.lock.release()
+        assert entry.lock.acquire(blocking=False)  # the failed acquire left it free
+        entry.lock.release()

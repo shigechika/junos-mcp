@@ -42,7 +42,7 @@ from junos_ops import show
 from junos_ops import upgrade
 
 from junos_mcp import __version__
-from junos_mcp.pool import PoolConnectionError, get_pool
+from junos_mcp.pool import PoolBusyError, PoolConnectionError, get_pool
 
 _SYSLOG_ALERT_RE = re.compile(
     r"RPD_BGP_NEIGHBOR_STATE_CHANGED.*Established->"
@@ -178,7 +178,7 @@ def _init_globals(config_path: str = "") -> str | None:
 _ACTIVE_BRIEF_JOBS = 0
 _ACTIVE_BRIEF_JOBS_LOCK = threading.Lock()
 _LAST_HOLD_AT = 0.0
-# Holds taken by push jobs (also counted in _ACTIVE_BRIEF_JOBS). They are never
+# Holds taken by push jobs, counted apart from _ACTIVE_BRIEF_JOBS. They are never
 # treated as stale: a push job releases its hold when it ends, however long it runs.
 _ACTIVE_PUSH_HOLDS = 0
 # A hold is never kept longer than this: a worker stuck on an unresponsive device cannot
@@ -215,9 +215,8 @@ def _ensure_config(config_path: str, reserve_job: bool = False, push_hold: bool 
         )
         if not already:
             if _ACTIVE_BRIEF_JOBS and time.monotonic() - _LAST_HOLD_AT >= _HOLD_MAX_SECONDS:
-                # stale holds from workers that never returned; push holds stay
-                _ACTIVE_BRIEF_JOBS = _ACTIVE_PUSH_HOLDS
-            if _ACTIVE_BRIEF_JOBS and common.config is not None:
+                _ACTIVE_BRIEF_JOBS = 0  # stale holds from workers that never returned
+            if (_ACTIVE_BRIEF_JOBS or _ACTIVE_PUSH_HOLDS) and common.config is not None:
                 return (
                     "Error: a background job (daily_brief or push_config) is still running "
                     "with the current config; "
@@ -226,11 +225,11 @@ def _ensure_config(config_path: str, reserve_job: bool = False, push_hold: bool 
             err = _init_globals(config_path)
             if err:
                 return err
-        if reserve_job:
+        if reserve_job and push_hold:
+            _ACTIVE_PUSH_HOLDS += 1
+        elif reserve_job:
             _ACTIVE_BRIEF_JOBS += 1
             _LAST_HOLD_AT = time.monotonic()
-            if push_hold:
-                _ACTIVE_PUSH_HOLDS += 1
     return None
 
 
@@ -243,9 +242,8 @@ def _release_config_hold(_future=None) -> None:
 
 def _release_push_hold() -> None:
     """Undo the hold taken by a push job."""
-    global _ACTIVE_BRIEF_JOBS, _ACTIVE_PUSH_HOLDS
+    global _ACTIVE_PUSH_HOLDS
     with _ACTIVE_BRIEF_JOBS_LOCK:
-        _ACTIVE_BRIEF_JOBS = max(0, _ACTIVE_BRIEF_JOBS - 1)
         _ACTIVE_PUSH_HOLDS = max(0, _ACTIVE_PUSH_HOLDS - 1)
 
 
@@ -278,17 +276,32 @@ def _connect_and_run(hostname: str, config_path: str, operation, push_owner: str
     if not common.config.has_option(hostname, "host") or common.config.get(hostname, "host") is None:
         common.config.set(hostname, "host", hostname)
 
+    # A push owner waits for the device as long as it takes; anyone else at most
+    # JUNOS_DEADLINE in total, first for a push to end, then for the device itself.
+    wait_until = None
     if push_owner is None:
-        owner = _wait_push_host_free(hostname, _deadline_seconds())
+        deadline = _deadline_seconds()
+        wait_until = None if deadline is None else time.monotonic() + deadline
+        owner = _wait_push_host_free(hostname, deadline)
         if owner is not None:
             return _host_busy_message(hostname, owner)
 
     pool = get_pool()
     if pool is not None:
         norm_path = _resolve_config_path(config_path)
+        timeout = None if wait_until is None else max(0.0, wait_until - time.monotonic())
         try:
-            with pool.acquire(hostname, norm_path) as dev:
+            with pool.acquire(hostname, norm_path, timeout=timeout) as dev:
                 return operation(hostname, dev)
+        except PoolBusyError:
+            with _JOBS_LOCK:
+                owner = _PUSH_ACTIVE_HOSTS.get(hostname)
+            if owner is not None:
+                return _host_busy_message(hostname, owner)
+            return (
+                f"Error: host busy: another operation on '{hostname}' did not finish "
+                "within JUNOS_DEADLINE; retry later"
+            )
         except PoolConnectionError as e:
             return f"Connection error: {e}"
 
