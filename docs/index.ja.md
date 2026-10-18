@@ -15,13 +15,13 @@ Desktop、Claude Code など）から利用できるようにします。STDIO �
 |---|---|
 | デバイス情報 | `get_device_facts`、`get_version`、`get_router_list`、`health_check` |
 | CLI コマンド実行 | `run_show_command`、`run_show_commands`、`run_show_command_batch` |
-| 設定管理 | `get_config`、`get_config_diff`、`push_config` |
+| 設定管理 | `get_config`、`get_config_diff`、`push_config`、`push_config_start`、`push_config_result` |
 | アップグレード操作 | `check_upgrade_readiness`、`compare_version`、`get_package_info`、`list_remote_files`、`copy_package`、`install_package`、`rollback_package`、`schedule_reboot` |
 | 診断 | `collect_rsi`、`collect_rsi_batch` |
 | プリフライトチェック | `check_reachability`、`check_local_inventory`、`check_remote_packages` |
 | 日次オペレーション | `daily_brief` |
 
-**デバイスに書き込むのは5本だけです。** `push_config`・`copy_package`・
+**デバイスに書き込むのは5本だけです。** `push_config`（`push_config_start` はそのバックグラウンド版）・`copy_package`・
 `install_package`・`rollback_package`・`schedule_reboot`。5本とも既定は
 dry-run で、それ以外はすべて読み取り専用です。各書き込みツールが実際に
 何を呼び、config.ini のどの権限で通るかは

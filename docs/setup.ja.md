@@ -73,7 +73,7 @@ python -m junos_mcp --check --check-host rt1
 
 | ツール | API 呼び出し | 権限ゲート |
 |---|---|---|
-| `push_config` | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → ヘルスチェック → 最終 `commit` → `unlock` | 対象ホストの `config.ini` アカウントに、configuration mode と commit を許す JUNOS login class が必要（読み取り専用/operator クラスでは不可）。クラス名自体はホストごとに `config.ini` で用意したもの。 |
+| `push_config`（バックグラウンド版の `push_config_start` を含む） | `jnpr.junos.utils.config.Config`: `lock` → `load(format="set")` → `diff` → `commit_check` → `commit(confirm=confirm_timeout)` → ヘルスチェック → 最終 `commit` → `unlock` | 対象ホストの `config.ini` アカウントに、configuration mode と commit を許す JUNOS login class が必要（読み取り専用/operator クラスでは不可）。クラス名自体はホストごとに `config.ini` で用意したもの。 |
 | `copy_package` | `junos_ops.upgrade.copy()` — チェックサム検証と事前クリーンアップ付きでファームウェアパッケージを SCP コピー | 同じアカウントにファイルコピー/ストレージ書き込み権限（デバイスの flash への SCP）が必要。 |
 | `install_package` | `junos_ops.upgrade.install()` — バージョン確認、保留中ロールバックの確認、コピー+チェックサム、リブートスケジュールのクリア、rescue-config 保存の後、PyEZ `SW.install()`（低容量な EX2300/EX3400 向けには `unlink` フラグ経由の `request system software add`） | ソフトウェアインストール権限が必要 — JUNOS `maintenance` クラスまたは superuser login class。 |
 | `rollback_package` | `junos_ops.upgrade.rollback()` — 保留中バージョンの存在を確認した上での `request system software rollback` 相当 | `install_package` と同じ、昇格されたソフトウェアメンテナンス権限。 |

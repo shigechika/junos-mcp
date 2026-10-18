@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2,<3",
-    "junos-ops>=0.23.0",
+    "junos-ops>=0.31.0",
 ]
 
 [project.optional-dependencies]

@@ -25,7 +25,7 @@ junos_mcp/
 ├── __init__.py         # パッケージ定義、__version__
 ├── __main__.py         # python -m junos_mcp 対応
 ├── pool.py             # per-host NETCONF 接続プール（ConnectionPool、get_pool）
-└── server.py           # MCPServer サーバー定義、24ツール実装
+└── server.py           # MCPServer サーバー定義、28ツール実装
 tests/
 ├── __init__.py
 ├── test_pool.py                # 27 ユニットテスト（ConnectionPool）
@@ -65,10 +65,12 @@ README.ja.md            # 日本語版
 - `run_show_commands` — 複数コマンドを1セッションで順次実行（`show.run_cli_batch()`、`output_format` 対応）
 - `run_show_command_batch` — 複数デバイスに並列実行（`common.run_parallel()`）
 
-#### MCP ツール — 設定管理（3）
+#### MCP ツール — 設定管理（5）
 - `get_config` — デバイス設定取得（text/set/xml、`dev.rpc.get_config()`）
 - `get_config_diff` — rollback バージョンとの差分表示
-- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）
+- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）。RPC タイムアウトは junos-ops の `common.resolve_config_timeout()`（config.ini の `timeout` > 機種別既定値 SRX_BRANCH 180 秒・他 60 秒）で解決し `dev.timeout` に設定、終了後に元へ戻す（プールで再利用されるため）。`JUNOS_DEADLINE`（既定 45 秒、0 で無効）が有効なら残り時間−余裕 10 秒に縮め、解決値が 60 秒を超えて収まらないか 30 秒を切るときは何もロックせず拒否して `push_config_start` へ誘導（dry_run は拒否しない）。同一ホストへの push は `_PUSH_ACTIVE_HOSTS` で 1 本に制限
+- `push_config_start` — push_config のバックグラウンド版。dry_run=True（既定）は差分だけ返しジョブを作らない。dry_run=False は差分を同期で返し、commit 以降を期限無し・フルのタイムアウトでスレッド実行（`_JOBS` に `kind="push_config"` で登録、config hold を取る）。途中で落ちても commit confirmed が機器側で自動ロールバック
+- `push_config_result` — ジョブの状態（running / done / failed / error / unknown）。`daily_brief_result` とはジョブ種別で分離
 
 #### MCP ツール — アップグレード操作（8）
 - `check_upgrade_readiness` — アップグレード準備状況
@@ -134,7 +136,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-157 テスト（グローバル初期化、config パス解決、接続プール、24 ツールの動作検証、バージョン整合性）。
+157 テスト（グローバル初期化、config パス解決、接続プール、28 ツールの動作検証、バージョン整合性）。
 
 `scripts/` にはライブスモークテストがある。`smoke_test.py`（CLI）、ツールごとの spec
 `smoke_probes.py`、そしてサーバー非依存のエンジン `smoke_harness.py` — エンジンはこの

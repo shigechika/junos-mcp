@@ -29,6 +29,8 @@ from junos_mcp.server import (
     daily_brief_start,
     install_package,
     push_config,
+    push_config_result,
+    push_config_start,
     rollback_package,
     schedule_reboot,
     get_config,
@@ -1187,6 +1189,260 @@ class TestPushConfig:
             # commit confirmed の1回のみ（確定 commit はしない）
             assert mock_cu.commit.call_count == 1
             mock_cu.commit.assert_called_once_with(confirm=1)
+
+
+# --- push_config: RPC timeout, deadline, background job ---
+
+_CONN_OK = {"hostname": "rt1.example.jp", "host": "rt1.example.jp", "ok": True, "error": None, "error_message": None}
+_HC_OK = {"ok": True, "passed_command": "uptime", "commands": [], "steps": [], "message": "ok"}
+
+
+def _push_dev(personality="MX"):
+    dev = MagicMock()
+    dev.facts = {"personality": personality}
+    dev.timeout = 30
+    return dev
+
+
+def _wait_push(job_id):
+    import time
+
+    for _ in range(100):
+        out = push_config_result(job_id)
+        if out["status"] != "running":
+            return out
+        time.sleep(0.02)
+    return out
+
+
+@pytest.fixture
+def push_state():
+    import junos_mcp.server as srv
+
+    with srv._JOBS_LOCK:
+        srv._JOBS.clear()
+        srv._PUSH_ACTIVE_HOSTS.clear()
+    yield srv
+    with srv._JOBS_LOCK:
+        srv._JOBS.clear()
+        srv._PUSH_ACTIVE_HOSTS.clear()
+
+
+class TestPushConfigTimeout:
+    def _run(self, dev, **kwargs):
+        seen = {}
+        with (
+            patch("junos_ops.common.connect", return_value={**_CONN_OK, "dev": dev}),
+            patch("junos_mcp.server.Config") as MockConfig,
+            patch("junos_mcp.server.upgrade._run_health_check", return_value=_HC_OK),
+        ):
+            cu = MagicMock()
+            cu.diff.return_value = "[edit]\n+  host-name new;"
+            cu.load.side_effect = lambda *a, **k: seen.setdefault("load", dev.timeout)
+            cu.commit.side_effect = lambda *a, **k: seen.setdefault("commit", dev.timeout)
+            MockConfig.return_value = cu
+            result = push_config("rt1.example.jp", set_commands=["set system host-name new"], **kwargs)
+        return result, cu, seen
+
+    def test_no_deadline_uses_model_default(self, mock_config, push_state, monkeypatch):
+        monkeypatch.setenv("JUNOS_DEADLINE", "0")
+        dev = _push_dev("MX")
+        result, cu, seen = self._run(dev, dry_run=False)
+        assert "permanent" in result
+        assert seen["commit"] == 60
+        assert dev.timeout == 30  # restored for the pooled device
+
+    def test_no_deadline_srx_branch_commits_with_180(self, mock_config, push_state, monkeypatch):
+        monkeypatch.setenv("JUNOS_DEADLINE", "0")
+        dev = _push_dev("SRX_BRANCH")
+        result, cu, seen = self._run(dev, dry_run=False)
+        assert "permanent" in result
+        assert seen["commit"] == 180
+        assert cu.commit.call_count == 2
+
+    def test_deadline_refuses_srx_branch_before_locking(self, mock_config, push_state, monkeypatch):
+        monkeypatch.delenv("JUNOS_DEADLINE", raising=False)
+        dev = _push_dev("SRX_BRANCH")
+        result, cu, seen = self._run(dev, dry_run=False)
+        assert "Not started" in result
+        assert "180s" in result
+        assert "push_config_start" in result
+        cu.lock.assert_not_called()
+        cu.commit.assert_not_called()
+        assert dev.timeout == 30
+        assert not push_state._PUSH_ACTIVE_HOSTS
+
+    def test_deadline_allows_dry_run_on_srx_branch(self, mock_config, push_state, monkeypatch):
+        monkeypatch.delenv("JUNOS_DEADLINE", raising=False)
+        dev = _push_dev("SRX_BRANCH")
+        result, cu, seen = self._run(dev)
+        assert "dry-run" in result
+        assert seen["load"] <= 45
+        cu.commit.assert_not_called()
+
+    def test_deadline_shortens_generic_timeout(self, mock_config, push_state, monkeypatch):
+        monkeypatch.delenv("JUNOS_DEADLINE", raising=False)
+        dev = _push_dev("MX")
+        result, cu, seen = self._run(dev, dry_run=False)
+        assert "permanent" in result
+        assert 30 <= seen["commit"] <= 35
+
+    def test_deadline_too_short_refuses_generic(self, mock_config, push_state, monkeypatch):
+        monkeypatch.setenv("JUNOS_DEADLINE", "20")
+        dev = _push_dev("MX")
+        result, cu, seen = self._run(dev, dry_run=False)
+        assert "Not started" in result
+        cu.lock.assert_not_called()
+
+    def test_long_config_timeout_refused_under_deadline(self, mock_config, push_state, monkeypatch):
+        monkeypatch.delenv("JUNOS_DEADLINE", raising=False)
+        mock_config.set("rt1.example.jp", "timeout", "300")
+        result, cu, seen = self._run(_push_dev("MX"), dry_run=False)
+        assert "Not started" in result and "300s" in result
+        cu.lock.assert_not_called()
+
+    def test_short_config_timeout_is_used(self, mock_config, push_state, monkeypatch):
+        monkeypatch.delenv("JUNOS_DEADLINE", raising=False)
+        mock_config.set("rt1.example.jp", "timeout", "20")
+        result, cu, seen = self._run(_push_dev("SRX_BRANCH"), dry_run=False)
+        assert "permanent" in result
+        assert seen["commit"] == 20
+
+    def test_busy_host_refused(self, mock_config, push_state):
+        push_state._PUSH_ACTIVE_HOSTS.add("rt1.example.jp")
+        result, cu, seen = self._run(_push_dev("MX"), dry_run=False)
+        assert "already in progress" in result
+        cu.lock.assert_not_called()
+
+
+class TestPushConfigJob:
+    def _patches(self, dev, cu, hc=_HC_OK):
+        return (
+            patch("junos_ops.common.connect", return_value={**_CONN_OK, "dev": dev}),
+            patch("junos_mcp.server.Config", return_value=cu),
+            patch("junos_mcp.server.upgrade._run_health_check", return_value=hc),
+        )
+
+    @staticmethod
+    def _cu():
+        cu = MagicMock()
+        cu.diff.return_value = "[edit]\n+  host-name new;"
+        return cu
+
+    def test_dry_run_default_starts_no_job(self, mock_config, push_state):
+        cu = self._cu()
+        p1, p2, p3 = self._patches(_push_dev(), cu)
+        with p1, p2, p3:
+            out = push_config_start("rt1.example.jp", set_commands=["set system host-name new"])
+        assert out["status"] == "dry_run"
+        assert "dry-run" in out["result"]
+        assert "job_id" not in out
+        cu.commit.assert_not_called()
+        assert not push_state._JOBS and not push_state._PUSH_ACTIVE_HOSTS
+
+    def test_no_changes_starts_no_job(self, mock_config, push_state):
+        cu = self._cu()
+        cu.diff.return_value = None
+        p1, p2, p3 = self._patches(_push_dev(), cu)
+        with p1, p2, p3:
+            out = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+        assert out == {"status": "done", "result": "# rt1.example.jp\nNo changes to apply"}
+        assert not push_state._JOBS
+
+    def test_invalid_input_rejected(self, mock_config, push_state):
+        out = push_config_start("rt1.example.jp")
+        assert out["status"] == "rejected"
+        assert "specify config_file or set_commands" in out["error"]
+
+    def test_happy_path(self, mock_config, push_state):
+        dev = _push_dev("SRX_BRANCH")
+        cu = self._cu()
+        seen = []
+        cu.commit.side_effect = lambda *a, **k: seen.append(dev.timeout)
+        p1, p2, p3 = self._patches(dev, cu)
+        with p1, p2, p3:
+            started = push_config_start("rt1.example.jp", set_commands=["set system host-name new"], dry_run=False)
+            assert started["status"] == "running"
+            assert started["poll_with"] == "push_config_result"
+            assert "dry-run" in started["diff"]
+            out = _wait_push(started["job_id"])
+        assert out["status"] == "done"
+        assert out["hostname"] == "rt1.example.jp"
+        assert "Commit confirmed and permanent." in out["result"]
+        assert seen == [180, 180]  # the job runs with the full model timeout
+        assert cu.commit.call_count == 2
+        assert push_state._ACTIVE_BRIEF_JOBS == 0
+        assert not push_state._PUSH_ACTIVE_HOSTS
+
+    def test_commit_failure_is_failed(self, mock_config, push_state):
+        cu = self._cu()
+        cu.commit.side_effect = Exception("RpcTimeoutError(cmd: commit-configuration)")
+        p1, p2, p3 = self._patches(_push_dev(), cu)
+        with p1, p2, p3:
+            started = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+            out = _wait_push(started["job_id"])
+        assert out["status"] == "failed"
+        assert "Config push failed" in out["result"]
+        assert not push_state._PUSH_ACTIVE_HOSTS
+        assert push_state._ACTIVE_BRIEF_JOBS == 0
+
+    def test_health_check_failure_is_failed(self, mock_config, push_state):
+        cu = self._cu()
+        hc = {"ok": False, "passed_command": None, "commands": [], "steps": [], "message": "no answer"}
+        p1, p2, p3 = self._patches(_push_dev(), cu, hc)
+        with p1, p2, p3:
+            started = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+            out = _wait_push(started["job_id"])
+        assert out["status"] == "failed"
+        assert "HEALTH CHECK FAILED" in out["result"]
+        assert cu.commit.call_count == 1
+
+    def test_lock_failure_in_preview_starts_no_job(self, mock_config, push_state):
+        cu = self._cu()
+        cu.lock.side_effect = Exception("locked by another user")
+        p1, p2, p3 = self._patches(_push_dev(), cu)
+        with p1, p2, p3:
+            out = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+        assert out["status"] == "failed"
+        assert "lock failed" in out["result"]
+        assert not push_state._JOBS and not push_state._PUSH_ACTIVE_HOSTS
+
+    def test_unexpected_exception_reports_type_only(self, mock_config, push_state):
+        preview = {"ok": True, "changed": True, "text": "DIFF", "rpc_timeout": 60}
+        with patch("junos_mcp.server._connect_and_run", side_effect=[preview, RuntimeError("secret host")]):
+            started = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+            out = _wait_push(started["job_id"])
+        assert out == {"job_id": started["job_id"], "status": "error", "hostname": "rt1.example.jp", "error": "RuntimeError"}
+        assert not push_state._PUSH_ACTIVE_HOSTS
+
+    def test_concurrent_push_to_same_host_refused(self, mock_config, push_state):
+        import threading
+
+        gate = threading.Event()
+        cu = self._cu()
+        cu.commit.side_effect = lambda *a, **k: gate.wait(5)
+        p1, p2, p3 = self._patches(_push_dev(), cu)
+        with p1, p2, p3:
+            started = push_config_start("rt1.example.jp", set_commands=["set x"], dry_run=False)
+            try:
+                again = push_config_start("rt1.example.jp", set_commands=["set y"], dry_run=False)
+                sync = push_config("rt1.example.jp", set_commands=["set y"])
+            finally:
+                gate.set()
+            out = _wait_push(started["job_id"])
+        assert again["status"] == "rejected"
+        assert "already in progress" in again["error"]
+        assert "already in progress" in sync
+        assert out["status"] == "done"
+
+    def test_job_kinds_do_not_cross(self, mock_config, push_state):
+        with push_state._JOBS_LOCK:
+            push_state._JOBS["b1"] = {"status": "done", "kind": "daily_brief", "created": 0.0, "finished": None}
+            push_state._JOBS["p1"] = {"status": "running", "kind": "push_config", "hostname": "h", "created": 0.0}
+        assert push_config_result("b1")["status"] == "unknown"
+        assert daily_brief_result("p1")["status"] == "unknown"
+        assert push_config_result("p1")["status"] == "running"
+        assert push_config_result("nope")["status"] == "unknown"
 
 
 # --- copy_package ---

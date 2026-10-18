@@ -26,6 +26,9 @@
 | `get_config` | デバイス設定の取得（text/set/xml 形式） | 要 |
 | `get_config_diff` | rollback バージョンとの設定差分表示 | 要 |
 | `push_config` | **書き込み。** commit confirmed + ヘルスチェック付きの設定投入 | 要 |
+| `push_config_start` / `push_config_result` | **書き込み。** 同じ投入をバックグラウンドで実行（1 呼び出しを約 60 秒で切るホスト型クライアントや，commit の遅い機種（SRX ブランチ）向け）。`push_config_start` が差分と `job_id` をすぐ返し，`push_config_result` を `running` でなくなるまで呼ぶ | 要 |
+
+**RPC タイムアウトと 1 呼び出しの期限。** load/commit の RPC タイムアウトは，ホストの `config.ini` の `timeout`，無ければ junos-ops の機種別既定値（SRX ブランチ機（SRX300/320/340/345 など。commit が 30 秒を超えることがある）は 180 秒，それ以外は 60 秒）です。同期の `push_config` は `JUNOS_DEADLINE`（既定 45 秒，0 で無効）に収まるよう，残り時間に合わせてタイムアウトを縮めます。収まらない長いタイムアウトが要るホスト（SRX ブランチ機，`config.ini` の長い `timeout`）や，残りが 30 秒を切るときは，何もロックせずに拒否し，解決したタイムアウトと残り時間を示して `push_config_start` / `push_config_result` を案内します。この組はタイムアウトを縮めず，1 呼び出しの期限も無しにバックグラウンドで commit します。途中でジョブが止まっても，確定されない `commit confirmed` は機器側で自動的にロールバックします。同じホストへの投入は同時に 1 本だけで，2 本目は拒否します。`dry_run=True` は拒否しません。
 
 ### アップグレード操作
 
