@@ -178,28 +178,45 @@ def _init_globals(config_path: str = "") -> str | None:
 _ACTIVE_BRIEF_JOBS = 0
 _ACTIVE_BRIEF_JOBS_LOCK = threading.Lock()
 _LAST_HOLD_AT = 0.0
+# Holds taken by push jobs (also counted in _ACTIVE_BRIEF_JOBS). They are never
+# treated as stale: a push job releases its hold when it ends, however long it runs.
+_ACTIVE_PUSH_HOLDS = 0
 # A hold is never kept longer than this: a worker stuck on an unresponsive device cannot
 # lock out a config switch until the process restarts.
 _HOLD_MAX_SECONDS = 900.0
 
 
-def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
+def _same_config_path(config_path: str) -> bool:
+    """True when ``config_path`` names the loaded config (after ``~`` expansion and realpath)."""
+    if not config_path:
+        return True
+    loaded = getattr(common.args, "config", None)
+    if not loaded:
+        return False
+    return os.path.realpath(_resolve_config_path(config_path)) == os.path.realpath(
+        os.path.expanduser(loaded)
+    )
+
+
+def _ensure_config(config_path: str, reserve_job: bool = False, push_hold: bool = False) -> str | None:
     """Initialize globals if needed. Return error string or None.
 
     With ``reserve_job`` the config selection and the reservation that blocks later
     switches happen under one lock, so no other call can switch in between.
+    ``push_hold`` marks the reservation as a push job's, which never goes stale.
     """
-    global _ACTIVE_BRIEF_JOBS, _LAST_HOLD_AT
+    global _ACTIVE_BRIEF_JOBS, _LAST_HOLD_AT, _ACTIVE_PUSH_HOLDS
     with _ACTIVE_BRIEF_JOBS_LOCK:
-        # 既に初期化済みで同じ config の場合は再初期化しない
+        # Do not re-initialise when the same config is already loaded
         already = (
             common.config is not None
             and common.args is not None
-            and (not config_path or common.args.config == config_path)
+            and _same_config_path(config_path)
         )
         if not already:
             if _ACTIVE_BRIEF_JOBS and time.monotonic() - _LAST_HOLD_AT >= _HOLD_MAX_SECONDS:
-                _ACTIVE_BRIEF_JOBS = 0  # stale holds from workers that never returned
+                # stale holds from workers that never returned; push holds stay
+                _ACTIVE_BRIEF_JOBS = _ACTIVE_PUSH_HOLDS
             if _ACTIVE_BRIEF_JOBS and common.config is not None:
                 return (
                     "Error: a background job (daily_brief or push_config) is still running "
@@ -212,6 +229,8 @@ def _ensure_config(config_path: str, reserve_job: bool = False) -> str | None:
         if reserve_job:
             _ACTIVE_BRIEF_JOBS += 1
             _LAST_HOLD_AT = time.monotonic()
+            if push_hold:
+                _ACTIVE_PUSH_HOLDS += 1
     return None
 
 
@@ -222,7 +241,15 @@ def _release_config_hold(_future=None) -> None:
         _ACTIVE_BRIEF_JOBS = max(0, _ACTIVE_BRIEF_JOBS - 1)
 
 
-def _connect_and_run(hostname: str, config_path: str, operation):
+def _release_push_hold() -> None:
+    """Undo the hold taken by a push job."""
+    global _ACTIVE_BRIEF_JOBS, _ACTIVE_PUSH_HOLDS
+    with _ACTIVE_BRIEF_JOBS_LOCK:
+        _ACTIVE_BRIEF_JOBS = max(0, _ACTIVE_BRIEF_JOBS - 1)
+        _ACTIVE_PUSH_HOLDS = max(0, _ACTIVE_PUSH_HOLDS - 1)
+
+
+def _connect_and_run(hostname: str, config_path: str, operation, push_owner: str | None = None):
     """Connect to device and run operation, returning formatted result.
 
     Uses the per-host connection pool when JUNOS_MCP_POOL != 0 (the
@@ -234,6 +261,9 @@ def _connect_and_run(hostname: str, config_path: str, operation):
     :param hostname: Target hostname (must exist in config.ini).
     :param config_path: Path to config.ini.
     :param operation: Callable(hostname, dev) -> str. Receives connected device.
+    :param push_owner: Set by a push that owns ``hostname``. Any other caller first
+        waits (at most ``JUNOS_DEADLINE``) for a push on the host to finish and
+        then answers "host busy" instead of blocking on the device.
     :return: Result string for MCP tool response.
     """
     err = _ensure_config(config_path)
@@ -247,6 +277,11 @@ def _connect_and_run(hostname: str, config_path: str, operation):
     # host キーが未設定なら section 名を使う
     if not common.config.has_option(hostname, "host") or common.config.get(hostname, "host") is None:
         common.config.set(hostname, "host", hostname)
+
+    if push_owner is None:
+        owner = _wait_push_host_free(hostname, _deadline_seconds())
+        if owner is not None:
+            return _host_busy_message(hostname, owner)
 
     pool = get_pool()
     if pool is not None:
@@ -999,358 +1034,6 @@ def check_remote_packages(
     return display.format_check_table(rows, show_connect=True, show_local=False, show_remote=True, show_disk=True)
 
 
-#: Seconds kept back from a per-call deadline for the RPCs around the commit
-#: (load, diff, commit_check, health check, final commit).
-_PUSH_MARGIN_SECONDS = 10.0
-#: The synchronous path never shortens the commit RPC timeout below PyEZ's
-#: default (30 s); a host that would need less than this is sent to
-#: push_config_start instead.
-_PUSH_MIN_RPC_SECONDS = 30
-#: After commit confirmed, a health check or the final commit is not started
-#: with less than this many seconds left before the deadline.
-_PUSH_MIN_STEP_SECONDS = 1.0
-
-
-def _now() -> float:
-    """Monotonic clock for push deadlines (a seam for tests)."""
-    return time.monotonic()
-
-
-def _push_commands(hostname: str, dev, config_file: str, set_commands: list[str] | None) -> list[str]:
-    if config_file:
-        if config_file.endswith(".j2"):
-            return common.render_template(config_file, hostname, dev)
-        return common.load_commands(config_file)
-    return set_commands
-
-
-def _push_config_impl(
-    hostname: str,
-    dev,
-    config_file: str,
-    set_commands: list[str] | None,
-    dry_run: bool,
-    confirm_timeout: int,
-    no_commit: bool,
-    health_check: list[str] | None,
-    deadline_at: float | None,
-) -> dict:
-    """Run the push_config flow on a connected device.
-
-    Returns ``{"ok": bool, "changed": bool, "text": str, "rpc_timeout": int}``.
-    ``ok`` is False when the flow ended without what was asked for (refused,
-    stopped by the deadline, lock/load/commit error, failed health check).
-    ``deadline_at`` is a ``_now()`` instant the call must finish by, or None for
-    no limit; with one, ``dev.timeout`` is recomputed before every RPC step.
-    ``dev.timeout`` is restored afterwards, since a pooled device is reused by
-    later calls.
-    """
-    resolved = common.resolve_config_timeout(hostname, dev)
-    if deadline_at is not None and not dry_run:
-        remaining = deadline_at - _now()
-        cap = int(remaining - _PUSH_MARGIN_SECONDS)
-        if resolved > cap and (
-            resolved > common.CONFIG_TIMEOUT_DEFAULT or cap < _PUSH_MIN_RPC_SECONDS
-        ):
-            return {
-                "ok": False,
-                "changed": False,
-                "rpc_timeout": resolved,
-                "text": (
-                    f"# {hostname}\nNot started: the commit RPC timeout for this host "
-                    f"resolves to {resolved}s (config.ini or model default), but only "
-                    f"{max(0.0, remaining):.0f}s of this call's JUNOS_DEADLINE remain "
-                    f"({_PUSH_MARGIN_SECONDS:g}s of which is kept for the health check "
-                    f"and final commit). Nothing was locked, loaded or committed.\n"
-                    f"Use push_config_start (same arguments, dry_run=False) and poll "
-                    f"push_config_result(job_id) instead. dry_run=True still works here."
-                ),
-            }
-
-    saved_timeout = dev.timeout
-    try:
-        return _push_config_flow(
-            hostname, dev, config_file, set_commands, dry_run,
-            confirm_timeout, no_commit, health_check, resolved, deadline_at,
-        )
-    finally:
-        try:
-            dev.timeout = saved_timeout
-        except Exception:
-            pass
-
-
-def _push_config_flow(
-    hostname, dev, config_file, set_commands, dry_run,
-    confirm_timeout, no_commit, health_check, resolved, deadline_at,
-) -> dict:
-    used = {"max": 0}
-
-    def _arm(reserve: float = 0.0) -> float | None:
-        """Set dev.timeout for the next RPC; return seconds left after ``reserve`` (None: no deadline)."""
-        if deadline_at is None:
-            dev.timeout = resolved
-            left = None
-        else:
-            left = deadline_at - _now() - reserve
-            dev.timeout = max(1, min(resolved, int(left)))
-        used["max"] = max(used["max"], dev.timeout)
-        return left
-
-    def _out(ok: bool, text: str, changed: bool = True) -> dict:
-        return {"ok": ok, "changed": changed, "text": text, "rpc_timeout": used["max"] or resolved}
-
-    def _quiet(step) -> None:
-        try:
-            step()
-        except Exception:
-            pass
-
-    # Before the commit, keep the margin for the health check and final commit.
-    reserve = 0.0 if dry_run else _PUSH_MARGIN_SECONDS
-    cu = Config(dev)
-
-    try:
-        _arm(reserve)
-        cu.lock()
-    except Exception as e:
-        return _out(False, f"# {hostname}\nConfig lock failed: {e}", changed=False)
-
-    diff = ""
-    pending = False  # a commit confirmed has been issued and not yet confirmed
-
-    def _pending(reason: str) -> dict:
-        _arm()
-        _quiet(cu.unlock)
-        return _out(False, (
-            f"# {hostname}\n## Config diff\n{diff}\n"
-            f"## COMMIT CONFIRMED PENDING\n{reason}\n"
-            f"A commit confirmed is pending on the device and will auto-rollback in "
-            f"{confirm_timeout} minute(s) unless confirmed. Let it roll back, then "
-            f"re-run the change with push_config_start (no per-call deadline)."
-        ))
-
-    try:
-        commands = _push_commands(hostname, dev, config_file, set_commands)
-        _arm(reserve)
-        cu.load("\n".join(commands), format="set")
-
-        _arm(reserve)
-        diff = cu.diff()
-        if diff is None:
-            _arm()
-            cu.unlock()
-            return _out(True, f"# {hostname}\nNo changes to apply", changed=False)
-
-        # Show the rendered commands when a template was used
-        rendered = ""
-        if config_file and config_file.endswith(".j2"):
-            rendered = "\n## Rendered commands\n" + "\n".join(
-                f"  {cmd}" for cmd in commands
-            ) + "\n"
-
-        if dry_run:
-            result = f"# {hostname} (dry-run)\n{rendered}## Config diff\n{diff}"
-            _arm()
-            cu.rollback()
-            cu.unlock()
-            return _out(True, result)
-
-        _arm(reserve)
-        cu.commit_check()
-
-        # Last point where stopping changes nothing on the device.
-        left = _arm(reserve)
-        if left is not None and left < min(resolved, _PUSH_MIN_RPC_SECONDS):
-            _quiet(cu.rollback)
-            _quiet(cu.unlock)
-            return _out(False, (
-                f"# {hostname}\n## Config diff\n{diff}\n"
-                f"## Stopped before commit\nOnly {max(0.0, left + reserve):.0f}s of this "
-                f"call's JUNOS_DEADLINE remained after commit_check, too little for "
-                f"commit confirmed plus the health check and final commit. Nothing was "
-                f"committed. Use push_config_start (same arguments, dry_run=False) and "
-                f"poll push_config_result(job_id) instead."
-            ))
-
-        cu.commit(confirm=confirm_timeout)
-        pending = True
-
-        if no_commit:
-            # Intentional auto-rollback: no health check, no final commit
-            _arm()
-            cu.unlock()
-            return _out(True, (
-                f"# {hostname}\n{rendered}## Config diff\n{diff}\n"
-                f"## Result\nCommit confirmed {confirm_timeout} min applied"
-                f" — intentional auto-rollback (no_commit=True).\n"
-                f"DO NOT run commit confirm manually."
-            ))
-
-        # junos-ops 0.16.0+: _run_health_check returns a structured dict
-        # (ok / passed_command / commands / steps / message). Default is
-        # "uptime" (NETCONF RPC) to match junos-ops 0.16.8+; broadcast ping
-        # fails on devices that block ICMP to 255.255.255.255 and caused
-        # spurious auto-rollbacks.
-        left = _arm()
-        if left is not None and left < _PUSH_MIN_STEP_SECONDS:
-            return _pending("JUNOS_DEADLINE ran out before the health check.")
-        health_cmds = health_check if health_check is not None else ["uptime"]
-        hc = upgrade._run_health_check(hostname, dev, health_cmds)
-
-        if not hc["ok"]:
-            # Leave the commit unconfirmed so the timer rolls it back
-            _arm()
-            cu.unlock()
-            return _out(False, (
-                f"# {hostname}\n## Config diff\n{diff}\n"
-                f"## HEALTH CHECK FAILED\n{hc['message']}\n"
-                f"Config will auto-rollback in {confirm_timeout} minute(s).\n"
-                f"DO NOT run commit confirm manually."
-            ))
-
-        # Confirm (clears the rollback timer)
-        left = _arm()
-        if left is not None and left < _PUSH_MIN_STEP_SECONDS:
-            return _pending(
-                "The health check passed, but JUNOS_DEADLINE ran out before the final commit."
-            )
-        cu.commit()
-        pending = False
-        _arm()
-        cu.unlock()
-        return _out(True, (
-            f"# {hostname}\n{rendered}## Config diff\n{diff}\n"
-            f"## Result\nCommit confirmed and permanent."
-        ))
-
-    except Exception as e:
-        if pending:
-            return _pending(f"Error after commit confirmed: {e}")
-        _quiet(cu.rollback)
-        _quiet(cu.unlock)
-        return _out(False, f"# {hostname}\nConfig push failed: {e}")
-
-
-def _validate_push_inputs(config_file: str, set_commands: list[str] | None) -> str | None:
-    if config_file and set_commands:
-        return "Error: specify either config_file or set_commands, not both"
-    if not config_file and not set_commands:
-        return "Error: specify config_file or set_commands"
-    return None
-
-
-def _reserve_push_host(hostname: str) -> bool:
-    """Mark ``hostname`` as having a push in progress; False if one already is."""
-    with _JOBS_LOCK:
-        if hostname in _PUSH_ACTIVE_HOSTS:
-            return False
-        _PUSH_ACTIVE_HOSTS.add(hostname)
-        return True
-
-
-def _release_push_host(hostname: str) -> None:
-    with _JOBS_LOCK:
-        _PUSH_ACTIVE_HOSTS.discard(hostname)
-
-
-def _push_busy_message(hostname: str) -> str:
-    return (
-        f"Error: a push to '{hostname}' is already in progress "
-        "(push_config or a push_config_start job); wait for it to finish "
-        "(poll push_config_result) and retry"
-    )
-
-
-@mcp.tool()
-def push_config(
-    hostname: str,
-    config_file: str = "",
-    set_commands: list[str] | None = None,
-    dry_run: bool = True,
-    confirm_timeout: int = 1,
-    no_commit: bool = False,
-    health_check: list[str] | None = None,
-    config_path: str = "",
-) -> str:
-    """Push configuration to a device with commit confirmed and health check (synchronous).
-
-    Supports two input methods (exactly one required):
-    - config_file: Path to a .set or .j2 file containing set commands
-    - set_commands: List of set command strings (inline)
-
-    Safety features (not available in Juniper's official MCP server):
-    - dry_run mode (default True): shows diff without committing
-    - commit confirmed: auto-rollback if not confirmed within timeout
-    - health check: auto-rollback on connectivity failure after commit
-
-    Commit flow (normal):
-        lock -> load -> diff -> commit_check -> commit confirmed ->
-        health check -> confirm -> unlock
-
-    Commit flow (no_commit=True — intentional auto-rollback):
-        lock -> load -> diff -> commit_check -> commit confirmed -> unlock
-        (health check and final confirm are skipped; JUNOS rolls back
-        automatically after confirm_timeout minutes)
-
-    RPC timeout: ``timeout`` in config.ini for the host, else the model default
-    from junos-ops (180 s on SRX branch models such as SRX300/320/340/345, whose
-    commits can exceed 30 s; 60 s otherwise). This call is bounded by
-    ``JUNOS_DEADLINE`` (default 45 s; 0 disables): the timeout is shortened to
-    fit the time left, and when a host needs a longer timeout than fits (an SRX
-    branch model, a long config.ini timeout) or less than 30 s would be left,
-    the push is refused before anything is locked and the message says to use
-    ``push_config_start`` / ``push_config_result``. Use that pair from hosted
-    clients that cut a tool call at about 60 s, and for slow-committing models.
-    dry_run=True is never refused. The time left is recomputed before every RPC
-    step: if too little remains after commit_check the push stops before commit
-    confirmed (nothing committed); if it runs out after commit confirmed the
-    answer says "COMMIT CONFIRMED PENDING" — the change will auto-rollback after
-    confirm_timeout minutes; let it, then re-run with push_config_start.
-
-    Only one push per host runs at a time; a second one is refused.
-
-    Args:
-        hostname: Target device hostname (must exist in config.ini)
-        config_file: Path to .set or .j2 file (mutually exclusive with set_commands)
-        set_commands: List of set commands (mutually exclusive with config_file)
-        dry_run: If True (default), show diff only without committing
-        confirm_timeout: Minutes before auto-rollback (default 1, used with commit confirmed)
-        no_commit: If True, issue commit confirmed but intentionally skip the final
-            commit so JUNOS auto-rolls back after confirm_timeout minutes. Useful
-            for triggering service restarts (e.g. syslog on EX3400) where no
-            ``request ...restart`` command exists. dry_run=True takes precedence
-            over no_commit (diff is shown but nothing is committed).
-        health_check: Fallback health check commands tried in order after commit.
-            Passes if ANY command succeeds. Supports "ping ..." (checks packets received),
-            "uptime" (NETCONF RPC probe), or any CLI command (success if no exception).
-            Default: ["uptime"] — uses the existing NETCONF session and does not
-            depend on ICMP reachability. (Changed from broadcast ping in junos-mcp
-            0.11.0 to match junos-ops 0.16.8+.)
-            Ignored when no_commit=True.
-        config_path: Path to config.ini (empty string uses default search)
-    """
-    err = _validate_push_inputs(config_file, set_commands)
-    if err:
-        return err
-    deadline = _deadline_seconds()
-    deadline_at = None if deadline is None else _now() + deadline
-    if not _reserve_push_host(hostname):
-        return _push_busy_message(hostname)
-    try:
-        out = _connect_and_run(
-            hostname,
-            config_path,
-            lambda h, dev: _push_config_impl(
-                h, dev, config_file, set_commands, dry_run,
-                confirm_timeout, no_commit, health_check, deadline_at,
-            ),
-        )
-    finally:
-        _release_push_host(hostname)
-    return out if isinstance(out, str) else out["text"]
-
-
 @mcp.tool()
 def copy_package(hostname: str, dry_run: bool = True, force: bool = False, config_path: str = "") -> str:
     """Copy firmware package to remote device via SCP with checksum verification.
@@ -1933,8 +1616,6 @@ _JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 _JOB_TTL_SECONDS = 600  # retain a finished job this long after it finishes
 _JOBS_MAX = 32  # hard cap on retained jobs
-# Hosts with a push_config / push_config_start in progress (guarded by _JOBS_LOCK).
-_PUSH_ACTIVE_HOSTS: set[str] = set()
 
 
 def _reap_jobs_locked() -> None:
@@ -2049,24 +1730,438 @@ def daily_brief_result(job_id: str) -> dict:
         return out
 
 
+# --- push_config: synchronous push and the background push job ---
+#: Seconds kept back from a per-call deadline when waiting for a push job, so
+#: the answer still reaches the client in time.
+_PUSH_WAIT_MARGIN_SECONDS = 5.0
+#: Hosts with a push in progress -> owner (push job id, or "sync-..." for a
+#: synchronous push with no deadline). Guarded by _JOBS_LOCK.
+_PUSH_ACTIVE_HOSTS: dict[str, str] = {}
+_PUSH_HOSTS_FREED = threading.Condition(_JOBS_LOCK)
+
+
+def _push_commands(hostname: str, dev, config_file: str, set_commands: list[str] | None) -> list[str]:
+    if config_file:
+        if config_file.endswith(".j2"):
+            return common.render_template(config_file, hostname, dev)
+        return common.load_commands(config_file)
+    return set_commands
+
+
+def _push_config_flow(
+    hostname: str,
+    dev,
+    config_file: str,
+    set_commands: list[str] | None,
+    dry_run: bool,
+    confirm_timeout: int,
+    no_commit: bool,
+    health_check: list[str] | None,
+    on_diff=None,
+) -> dict:
+    """Run the push on a connected device with the host's full RPC timeout.
+
+    Returns ``{"status": "done" | "dry_run" | "failed", "text": str}``. Every
+    RPC runs with ``common.resolve_config_timeout()`` (config.ini ``timeout``,
+    else the model default); nothing is shortened to fit a deadline. ``on_diff``
+    is called with the diff text once the candidate is loaded and locked,
+    before anything is committed. ``dev.timeout`` is restored afterwards, since
+    a pooled device is reused by later calls.
+    """
+    saved_timeout = dev.timeout
+    dev.timeout = common.resolve_config_timeout(hostname, dev)
+    try:
+        return _push_config_steps(
+            hostname, dev, config_file, set_commands, dry_run,
+            confirm_timeout, no_commit, health_check, on_diff,
+        )
+    finally:
+        try:
+            dev.timeout = saved_timeout
+        except Exception:
+            pass
+
+
+def _push_config_steps(
+    hostname, dev, config_file, set_commands, dry_run,
+    confirm_timeout, no_commit, health_check, on_diff,
+) -> dict:
+    def _quiet(step) -> None:
+        try:
+            step()
+        except Exception:
+            pass
+
+    cu = Config(dev)
+    try:
+        cu.lock()
+    except Exception as e:
+        return {"status": "failed", "text": f"# {hostname}\nConfig lock failed: {e}"}
+
+    diff = ""
+    rendered = ""
+    # What has been sent to the device so far; decides how a failure is reported.
+    stage = "candidate"
+    try:
+        commands = _push_commands(hostname, dev, config_file, set_commands)
+        cu.load("\n".join(commands), format="set")
+
+        diff = cu.diff()
+        if diff is None:
+            cu.unlock()
+            return {"status": "done", "text": f"# {hostname}\nNo changes to apply"}
+
+        # Show the rendered commands when a template was used
+        if config_file and config_file.endswith(".j2"):
+            rendered = "\n## Rendered commands\n" + "\n".join(
+                f"  {cmd}" for cmd in commands
+            ) + "\n"
+
+        if dry_run:
+            text = f"# {hostname} (dry-run)\n{rendered}## Config diff\n{diff}"
+            cu.rollback()
+            cu.unlock()
+            return {"status": "dry_run", "text": text}
+
+        if on_diff is not None:
+            on_diff(f"# {hostname}\n{rendered}## Config diff\n{diff}")
+
+        cu.commit_check()
+
+        # A commit confirmed RPC that times out may still complete on the device,
+        # so from here on a failure is reported as a possibly pending commit.
+        stage = "commit_confirmed"
+        cu.commit(confirm=confirm_timeout)
+        stage = "pending"
+
+        if no_commit:
+            # Intentional auto-rollback: no health check, no final commit
+            _quiet(cu.unlock)
+            return {"status": "done", "text": (
+                f"# {hostname}\n{rendered}## Config diff\n{diff}\n"
+                f"## Result\nCommit confirmed {confirm_timeout} min applied"
+                f" — intentional auto-rollback (no_commit=True).\n"
+                f"DO NOT run commit confirm manually."
+            )}
+
+        # junos-ops 0.16.0+: _run_health_check returns a structured dict
+        # (ok / passed_command / commands / steps / message). Default is
+        # "uptime" (NETCONF RPC) to match junos-ops 0.16.8+; broadcast ping
+        # fails on devices that block ICMP to 255.255.255.255 and caused
+        # spurious auto-rollbacks.
+        health_cmds = health_check if health_check is not None else ["uptime"]
+        hc = upgrade._run_health_check(hostname, dev, health_cmds)
+
+        if not hc["ok"]:
+            # Leave the commit unconfirmed so the timer rolls it back
+            _quiet(cu.unlock)
+            return {"status": "failed", "text": (
+                f"# {hostname}\n## Config diff\n{diff}\n"
+                f"## HEALTH CHECK FAILED\n{hc['message']}\n"
+                f"Config will auto-rollback in {confirm_timeout} minute(s).\n"
+                f"DO NOT run commit confirm manually."
+            )}
+
+        # Confirm (clears the rollback timer)
+        stage = "confirm"
+        cu.commit()
+        stage = "confirmed"
+        _quiet(cu.unlock)
+        return {"status": "done", "text": (
+            f"# {hostname}\n{rendered}## Config diff\n{diff}\n"
+            f"## Result\nCommit confirmed and permanent."
+        )}
+
+    except Exception as e:
+        if stage == "candidate":
+            _quiet(cu.rollback)
+            _quiet(cu.unlock)
+            return {"status": "failed", "text": f"# {hostname}\nConfig push failed: {e}"}
+        _quiet(cu.unlock)
+        if stage == "commit_confirmed":
+            what = (
+                f"## COMMIT CONFIRMED MAY BE PENDING\nThe commit confirmed RPC failed: {e}\n"
+                f"The device may still have applied it. If it did, it rolls back "
+                f"automatically in {confirm_timeout} minute(s), since it will not be confirmed."
+            )
+        elif stage == "confirm":
+            what = (
+                f"## FINAL COMMIT FAILED\nThe confirming commit failed: {e}\n"
+                f"Unless it took effect on the device anyway, the pending commit confirmed "
+                f"rolls back automatically in {confirm_timeout} minute(s). Check "
+                f"`show system commit` on the device."
+            )
+        else:  # pending: the health check raised
+            what = (
+                f"## COMMIT CONFIRMED PENDING\nError after commit confirmed: {e}\n"
+                f"The commit confirmed is not confirmed and rolls back automatically in "
+                f"{confirm_timeout} minute(s). DO NOT run commit confirm manually."
+            )
+        return {"status": "failed", "text": f"# {hostname}\n## Config diff\n{diff}\n{what}"}
+
+
+def _validate_push_inputs(config_file: str, set_commands: list[str] | None) -> str | None:
+    if config_file and set_commands:
+        return "Error: specify either config_file or set_commands, not both"
+    if not config_file and not set_commands:
+        return "Error: specify config_file or set_commands"
+    return None
+
+
+def _reserve_push_host(hostname: str, owner: str) -> str | None:
+    """Mark ``hostname`` as owned by a push; return the current owner if it already is."""
+    with _JOBS_LOCK:
+        current = _PUSH_ACTIVE_HOSTS.get(hostname)
+        if current is not None:
+            return current
+        _PUSH_ACTIVE_HOSTS[hostname] = owner
+        return None
+
+
+def _release_push_host(hostname: str) -> None:
+    with _PUSH_HOSTS_FREED:
+        _PUSH_ACTIVE_HOSTS.pop(hostname, None)
+        _PUSH_HOSTS_FREED.notify_all()
+
+
+def _wait_push_host_free(hostname: str, timeout: float | None) -> str | None:
+    """Wait until no push owns ``hostname``; return the owner if it still does after ``timeout``."""
+    with _PUSH_HOSTS_FREED:
+        _PUSH_HOSTS_FREED.wait_for(lambda: hostname not in _PUSH_ACTIVE_HOSTS, timeout)
+        return _PUSH_ACTIVE_HOSTS.get(hostname)
+
+
+def _host_busy_message(hostname: str, owner: str) -> str:
+    if owner.startswith("sync-"):
+        return f"Error: host busy: a synchronous push_config is in progress on '{hostname}'; retry later"
+    return (
+        f"Error: host busy: push job {owner} in progress on '{hostname}'; "
+        f"poll push_config_result(job_id='{owner}') and retry once it has finished"
+    )
+
+
 def _run_push_job(job_id: str, hostname: str, config_path: str, args: tuple) -> None:
     payload: dict = {"status": "error", "error": "unknown"}
+
+    def _on_diff(text: str) -> None:
+        with _JOBS_LOCK:
+            job = _JOBS.get(job_id)
+            if job is not None:
+                job["diff"] = text
+                job["_preview"].set()
+
     try:
         out = _connect_and_run(
-            hostname, config_path, lambda h, dev: _push_config_impl(h, dev, *args, None)
+            hostname, config_path,
+            lambda h, dev: _push_config_flow(h, dev, *args, on_diff=_on_diff),
+            push_owner=job_id,
         )
         if isinstance(out, str):
             payload = {"status": "failed", "result": out}
         else:
-            payload = {"status": "done" if out["ok"] else "failed", "result": out["text"]}
+            payload = {"status": out["status"], "result": out["text"]}
     except Exception as exc:
         # Only the type: the message may embed hostnames or paths.
         payload = {"status": "error", "error": type(exc).__name__}
     finally:
         # Release before publishing the outcome, so a caller that sees it can push again.
-        _release_config_hold()
+        _release_push_hold()
         _release_push_host(hostname)
         _finish_job(job_id, payload)
+        with _JOBS_LOCK:
+            job = _JOBS.get(job_id)
+            if job is not None:
+                job["_preview"].set()
+                job["_done"].set()
+
+
+def _start_push_job(
+    hostname: str,
+    config_path: str,
+    args: tuple,
+) -> tuple[str | None, str | None, dict | None]:
+    """Reserve the host and the config, register a push job and start its thread.
+
+    Returns ``(job_id, error, job)``; ``error`` is set (and nothing held) on refusal.
+    """
+    job_id = secrets.token_hex(8)
+    owner = _reserve_push_host(hostname, job_id)
+    if owner is not None:
+        return None, _host_busy_message(hostname, owner), None
+    held = False
+    started = False
+    try:
+        # Hold the process-global config until the job ends, so the job keeps the
+        # inventory (and device) it was started with.
+        err = _ensure_config(config_path, reserve_job=True, push_hold=True)
+        if err:
+            return None, err, None
+        held = True
+        job = {
+            "status": "running",
+            "kind": "push_config",
+            "hostname": hostname,
+            "created": time.monotonic(),
+            "_preview": threading.Event(),
+            "_done": threading.Event(),
+        }
+        with _JOBS_LOCK:
+            _reap_jobs_locked()
+            _evict_finished_locked()
+            if len(_JOBS) >= _JOBS_MAX:
+                return None, f"Error: too many retained jobs (>= {_JOBS_MAX}); retry shortly", None
+            _JOBS[job_id] = job
+        thread = threading.Thread(
+            target=_run_push_job,
+            args=(job_id, hostname, config_path, args),
+            name=f"push_config-{job_id}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            with _JOBS_LOCK:
+                _JOBS.pop(job_id, None)
+            return None, f"Error: {type(exc).__name__}", None
+        started = True
+        return job_id, None, job
+    finally:
+        if not started:
+            if held:
+                _release_push_hold()
+            _release_push_host(hostname)
+
+
+def _push_job_view(job_id: str) -> dict:
+    with _JOBS_LOCK:
+        _reap_jobs_locked()
+        job = _JOBS.get(job_id)
+        if job is None or job.get("kind") != "push_config":
+            return {"job_id": job_id, "status": "unknown"}
+        out: dict = {"job_id": job_id, "status": job["status"], "hostname": job["hostname"]}
+        for key in ("diff", "result", "error"):
+            if key in job:
+                out[key] = job[key]
+        return out
+
+
+def _wait_budget(started_at: float) -> float | None:
+    """Seconds a call that began at ``started_at`` may still wait, or None with no deadline."""
+    deadline = _deadline_seconds()
+    if deadline is None:
+        return None
+    return max(0.0, deadline - (time.monotonic() - started_at) - _PUSH_WAIT_MARGIN_SECONDS)
+
+
+@mcp.tool()
+def push_config(
+    hostname: str,
+    config_file: str = "",
+    set_commands: list[str] | None = None,
+    dry_run: bool = True,
+    confirm_timeout: int = 1,
+    no_commit: bool = False,
+    health_check: list[str] | None = None,
+    config_path: str = "",
+) -> str:
+    """Push configuration to a device with commit confirmed and health check.
+
+    Supports two input methods (exactly one required):
+    - config_file: Path to a .set or .j2 file containing set commands
+    - set_commands: List of set command strings (inline)
+
+    Safety features (not available in Juniper's official MCP server):
+    - dry_run mode (default True): shows diff without committing
+    - commit confirmed: auto-rollback if not confirmed within timeout
+    - health check: auto-rollback on connectivity failure after commit
+
+    Commit flow (normal):
+        lock -> load -> diff -> commit_check -> commit confirmed ->
+        health check -> confirm -> unlock
+
+    Commit flow (no_commit=True — intentional auto-rollback):
+        lock -> load -> diff -> commit_check -> commit confirmed -> unlock
+        (health check and final confirm are skipped; JUNOS rolls back
+        automatically after confirm_timeout minutes)
+
+    RPC timeout: every step uses ``timeout`` from config.ini for the host, else
+    the model default from junos-ops (180 s on SRX branch models such as
+    SRX300/320/340/345, whose commits can exceed 30 s; 120 s otherwise). It is
+    never shortened.
+
+    Per-call deadline: with ``JUNOS_DEADLINE`` set (default 45 s; 0 disables)
+    the push runs as a background job and this call waits for it until shortly
+    before the deadline. If it finishes, the answer is the same as without a
+    deadline. If not, the answer says "Still running" with a ``job_id``: poll
+    ``push_config_result(job_id)`` for the outcome (the device-side commit
+    confirmed protects a push whose caller went away). For hosted clients that
+    cut a tool call at about 60 s and for slow-committing models,
+    ``push_config_start`` returns the diff and the job id without waiting.
+
+    Only one push per host runs at a time; a second one is refused. While a
+    push holds a host, other tools on that host wait at most until the deadline
+    and then answer "host busy".
+
+    Args:
+        hostname: Target device hostname (must exist in config.ini)
+        config_file: Path to .set or .j2 file (mutually exclusive with set_commands)
+        set_commands: List of set commands (mutually exclusive with config_file)
+        dry_run: If True (default), show diff only without committing
+        confirm_timeout: Minutes before auto-rollback (default 1, used with commit confirmed)
+        no_commit: If True, issue commit confirmed but intentionally skip the final
+            commit so JUNOS auto-rolls back after confirm_timeout minutes. Useful
+            for triggering service restarts (e.g. syslog on EX3400) where no
+            ``request ...restart`` command exists. dry_run=True takes precedence
+            over no_commit (diff is shown but nothing is committed).
+        health_check: Fallback health check commands tried in order after commit.
+            Passes if ANY command succeeds. Supports "ping ..." (checks packets received),
+            "uptime" (NETCONF RPC probe), or any CLI command (success if no exception).
+            Default: ["uptime"] — uses the existing NETCONF session and does not
+            depend on ICMP reachability. (Changed from broadcast ping in junos-mcp
+            0.11.0 to match junos-ops 0.16.8+.)
+            Ignored when no_commit=True.
+        config_path: Path to config.ini (empty string uses default search)
+    """
+    started_at = time.monotonic()
+    err = _validate_push_inputs(config_file, set_commands)
+    if err:
+        return err
+    args = (config_file, set_commands, dry_run, confirm_timeout, no_commit, health_check)
+
+    if _deadline_seconds() is None:
+        owner_id = f"sync-{secrets.token_hex(4)}"
+        owner = _reserve_push_host(hostname, owner_id)
+        if owner is not None:
+            return _host_busy_message(hostname, owner)
+        try:
+            out = _connect_and_run(
+                hostname, config_path,
+                lambda h, dev: _push_config_flow(h, dev, *args),
+                push_owner=owner_id,
+            )
+        finally:
+            _release_push_host(hostname)
+        return out if isinstance(out, str) else out["text"]
+
+    job_id, err, job = _start_push_job(hostname, config_path, args)
+    if err:
+        return err
+    job["_done"].wait(_wait_budget(started_at))
+    view = _push_job_view(job_id)
+    if view["status"] == "running":
+        return (
+            f"# {hostname}\nStill running as push job {job_id} (JUNOS_DEADLINE reached). "
+            f"Poll push_config_result(job_id='{job_id}') every ~10 s for the outcome. "
+            + (
+                f"A commit confirmed rolls back on the device after {confirm_timeout} "
+                "minute(s) unless the job confirms it."
+                if not dry_run else "Nothing is committed (dry_run=True)."
+            )
+            + (f"\n{view['diff']}" if view.get("diff") else "")
+        )
+    if view["status"] == "error":
+        return f"# {hostname}\nConfig push failed: {view.get('error')}"
+    return view.get("result", f"# {hostname}\nConfig push failed: no result")
 
 
 @mcp.tool()
@@ -2080,140 +2175,76 @@ def push_config_start(
     health_check: list[str] | None = None,
     config_path: str = "",
 ) -> dict:
-    """Start push_config as a background job; returns the diff and a ``job_id`` at once.
+    """Start push_config as a background job and return its diff and ``job_id`` without waiting for the commit.
 
     Use this instead of ``push_config`` when the client cuts a tool call at about
     60 s (hosted connectors) or the device commits slowly (SRX branch models such
-    as SRX300/320/340/345), i.e. whenever ``push_config`` answers "Not started"
-    because of ``JUNOS_DEADLINE``. The commit then runs with the host's full RPC
-    timeout (``timeout`` in config.ini, else 180 s on SRX branch models and 60 s
-    otherwise) and no per-call deadline. Arguments and the commit flow are the
-    same as ``push_config``.
+    as SRX300/320/340/345), or when ``push_config`` answered "Still running". The
+    job uses the host's full RPC timeout (``timeout`` in config.ini, else 180 s on
+    SRX branch models and 120 s otherwise) and no per-call deadline. Arguments
+    and the commit flow are the same as ``push_config``.
 
-    With ``dry_run=True`` (default) it only returns the diff (``status``
-    ``dry_run``, ``result``) and starts no job; nothing is committed. With
-    ``dry_run=False`` it first computes the diff synchronously (returned as
-    ``diff``), then runs lock -> load ->
-    commit_check -> commit confirmed -> health check -> confirm -> unlock in the
-    background. Poll ``push_config_result(job_id)`` every ~10 s until ``status``
-    is no longer ``running``. If the server dies mid-way, the unconfirmed
-    commit confirmed rolls back on the device after ``confirm_timeout`` minutes.
+    The job locks the candidate configuration, loads the change and computes the
+    diff, and this call returns that diff (``diff``). The same locked session then
+    goes on to commit_check -> commit confirmed -> health check -> confirm ->
+    unlock, so the committed change is exactly the diff returned. Poll
+    ``push_config_result(job_id)`` every ~10 s until ``status`` is not
+    ``running``. If the server dies mid-way, an unconfirmed commit confirmed
+    rolls back on the device after ``confirm_timeout`` minutes.
 
-    Returns ``{"job_id", "status": "running", "diff", "poll_with", ...}``; or,
-    without a job, ``status`` ``dry_run`` (diff only) / ``done`` (no changes to
-    apply) / ``failed`` (the diff step failed: lock, load, connection) with
-    ``result`` text, or
-    ``rejected`` with ``error`` (a push to this host is already in progress, too
-    many retained jobs, or a config switch while a job runs).
+    With ``dry_run=True`` (default) nothing is committed: the answer has
+    ``status`` ``dry_run`` and the diff under ``result`` once the job finishes.
+
+    Returns ``{"job_id", "status", "hostname", "diff"?, "result"?,
+    "poll_with": "push_config_result", "poll_after_seconds"}``. ``status`` may
+    already be final (``done`` with "No changes to apply", ``failed`` for a lock
+    or load error). A refusal returns ``{"status": "rejected", "error"}`` (a push
+    to this host is already in progress, too many retained jobs, or a config
+    switch while a job runs).
 
     Args:
         hostname: Target device hostname (must exist in config.ini)
         config_file: Path to .set or .j2 file (mutually exclusive with set_commands)
         set_commands: List of set commands (mutually exclusive with config_file)
-        dry_run: If True (default), return the diff only and start no job
+        dry_run: If True (default), return the diff only; nothing is committed
         confirm_timeout: Minutes before auto-rollback (default 1)
         no_commit: Commit confirmed only, then let JUNOS roll back (see push_config)
         health_check: Health check commands after commit (see push_config; default ["uptime"])
         config_path: Path to config.ini (empty string uses default search)
     """
+    started_at = time.monotonic()
     err = _validate_push_inputs(config_file, set_commands)
     if err:
         return {"status": "rejected", "error": err}
-    if not _reserve_push_host(hostname):
-        return {"status": "rejected", "error": _push_busy_message(hostname)}
-    started = False
-    held = False
-    try:
-        # Hold the process-global config from the preview until the job ends, so
-        # the job commits with the same inventory (and device) that was previewed.
-        err = _ensure_config(config_path, reserve_job=True)
-        if err:
-            return {"status": "rejected", "error": err}
-        held = True
-        deadline = _deadline_seconds()
-        deadline_at = None if deadline is None else _now() + deadline
-        preview = _connect_and_run(
-            hostname,
-            config_path,
-            lambda h, dev: _push_config_impl(
-                h, dev, config_file, set_commands, True,
-                confirm_timeout, no_commit, health_check, deadline_at,
-            ),
-        )
-        if isinstance(preview, str):
-            return {"status": "failed", "result": preview}
-        if not preview["ok"]:
-            return {"status": "failed", "result": preview["text"]}
-        if not preview["changed"]:
-            return {"status": "done", "result": preview["text"]}
-        if dry_run:
-            return {"status": "dry_run", "result": preview["text"]}
-
-        job_id = secrets.token_hex(8)
-        with _JOBS_LOCK:
-            _reap_jobs_locked()
-            _evict_finished_locked()
-            if len(_JOBS) >= _JOBS_MAX:
-                return {"status": "rejected", "error": f"too many retained jobs (>= {_JOBS_MAX}); retry shortly"}
-            _JOBS[job_id] = {
-                "status": "running",
-                "kind": "push_config",
-                "hostname": hostname,
-                "created": time.monotonic(),
-            }
-        thread = threading.Thread(
-            target=_run_push_job,
-            args=(
-                job_id, hostname, config_path,
-                (config_file, set_commands, False, confirm_timeout, no_commit, health_check),
-            ),
-            name=f"push_config-{job_id}",
-            daemon=True,
-        )
-        try:
-            thread.start()
-        except RuntimeError as exc:
-            with _JOBS_LOCK:
-                _JOBS.pop(job_id, None)
-            return {"status": "error", "error": type(exc).__name__}
-        started = True
-        return {
-            "job_id": job_id,
-            "status": "running",
-            "hostname": hostname,
-            "diff": preview["text"],
-            "poll_with": "push_config_result",
-            "poll_after_seconds": 10,
-        }
-    finally:
-        if not started:
-            if held:
-                _release_config_hold()
-            _release_push_host(hostname)
+    args = (config_file, set_commands, dry_run, confirm_timeout, no_commit, health_check)
+    job_id, err, job = _start_push_job(hostname, config_path, args)
+    if err:
+        return {"status": "rejected", "error": err}
+    budget = _wait_budget(started_at)
+    if dry_run:
+        job["_done"].wait(budget)
+    else:
+        job["_preview"].wait(budget)
+    view = _push_job_view(job_id)
+    view.update({"poll_with": "push_config_result", "poll_after_seconds": 10})
+    return view
 
 
 @mcp.tool()
 def push_config_result(job_id: str) -> dict:
-    """Fetch a ``push_config_start`` job by id.
+    """Fetch a ``push_config_start`` (or deadline-bound ``push_config``) job by id.
 
-    ``status`` is ``running`` (keep polling), ``done`` (``result`` holds the same
-    text ``push_config`` returns: committed and permanent, or the intentional
-    no_commit rollback), ``failed`` (``result`` says why: lock/load/commit error,
-    or a failed health check that leaves the commit to roll back on its own),
-    ``error`` (``error`` holds the exception type name only; any unconfirmed
-    commit rolls back after ``confirm_timeout`` minutes) or ``unknown`` (bad or
-    expired id; finished jobs are kept for 10 minutes).
+    ``status`` is ``running`` (keep polling; ``diff`` is present once computed),
+    ``done`` (``result`` holds the same text ``push_config`` returns: committed
+    and permanent, no changes, or the intentional no_commit rollback),
+    ``dry_run`` (``result`` holds the diff; nothing committed), ``failed``
+    (``result`` says why: lock/load error, failed health check, or a commit
+    confirmed that is or may be pending and rolls back after confirm_timeout
+    minutes), ``error`` (``error`` holds the exception type name only; any
+    unconfirmed commit rolls back after confirm_timeout minutes) or ``unknown``
+    (bad or expired id; finished jobs are kept for 10 minutes).
     """
-    with _JOBS_LOCK:
-        _reap_jobs_locked()
-        job = _JOBS.get(job_id)
-        if job is None or job.get("kind") != "push_config":
-            return {"job_id": job_id, "status": "unknown"}
-        out: dict = {"job_id": job_id, "status": job["status"], "hostname": job["hostname"]}
-        for key in ("result", "error"):
-            if key in job:
-                out[key] = job[key]
-        return out
+    return _push_job_view(job_id)
 
 
 @mcp.tool()

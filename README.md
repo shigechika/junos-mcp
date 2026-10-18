@@ -37,7 +37,7 @@ While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for h
 | `get_config` | Get device configuration (text/set/xml format) | Yes |
 | `get_config_diff` | Show config diff against a rollback version | Yes |
 | `push_config` | Push config with commit confirmed + health check | Yes |
-| `push_config_start` / `push_config_result` | The same push as a background job, for hosted clients that cut a call at about 60 s and for slow-committing models (SRX branch): `push_config_start` returns the diff and a `job_id` at once, poll `push_config_result` until it is no longer `running` | Yes |
+| `push_config_start` / `push_config_result` | The same push as a background job, for hosted clients that cut a call at about 60 s and for slow-committing models (SRX branch): `push_config_start` returns the diff and a `job_id` without waiting for the commit, which runs on the same locked session; poll `push_config_result` until it is no longer `running` | Yes |
 
 ### Upgrade Operations
 
@@ -92,24 +92,21 @@ The AI assistant must explicitly set `dry_run=False` to make changes.
   JUNOS auto-rolls back after `confirm_timeout` minutes. Useful for restarting services that
   lack a `request ...restart` command (e.g. syslog daemon on EX3400 post-upgrade).
 
-**RPC timeout and the per-call deadline.** The load/commit RPC timeout is
+**RPC timeout and the per-call deadline.** Every load/commit RPC uses
 `timeout` from the host's `config.ini` section, else the junos-ops model
 default: 180 s on SRX branch models (SRX300/320/340/345 and the like, whose
-commits can exceed 30 s), 60 s otherwise. The synchronous `push_config` is
-bounded by `JUNOS_DEADLINE` (default 45 s; 0 disables): it shortens the
-timeout to fit the time left, and when the host needs a longer timeout than
-fits (an SRX branch model, a long `config.ini` timeout) or less than 30 s would
-be left, it refuses before locking anything, says which timeout it resolved
-and how much time was left, and points to `push_config_start` /
-`push_config_result`. That pair runs the commit in a background job with the
-full timeout and no per-call deadline. If the job dies mid-way, the
-unconfirmed `commit confirmed` rolls back on the device by itself. Only one
-push per host runs at a time; a second one is refused. `dry_run=True` is never
-refused. The time left is recomputed before every RPC step: if too little
-remains after `commit_check`, the push stops before `commit confirmed` and
-nothing is committed; if it runs out after `commit confirmed`, the answer says
-`COMMIT CONFIRMED PENDING` and the change rolls back after `confirm_timeout`
-minutes.
+commits can exceed 30 s), 120 s otherwise. It is never shortened. With
+`JUNOS_DEADLINE` set (default 45 s; 0 disables), `push_config` runs the push
+as a background job and waits for it until shortly before the deadline: if it
+finishes, the answer is the same as without a deadline; if not, the answer
+says `Still running` with a `job_id` to poll with `push_config_result`.
+`push_config_start` returns the diff and the `job_id` without waiting for the
+commit; the job loads and diffs the change and then commits on the same locked
+session, so what is committed is exactly the diff returned. A failure after
+`commit confirmed` has been sent is reported as a possibly pending commit that
+rolls back on the device after `confirm_timeout` minutes. Only one push per
+host runs at a time; a second one is refused, and other tools on that host
+wait at most until the deadline and then answer `host busy`.
 
 ## Requirements
 

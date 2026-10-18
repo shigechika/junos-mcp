@@ -68,9 +68,9 @@ README.ja.md            # 日本語版
 #### MCP ツール — 設定管理（5）
 - `get_config` — デバイス設定取得（text/set/xml、`dev.rpc.get_config()`）
 - `get_config_diff` — rollback バージョンとの差分表示
-- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）。RPC タイムアウトは junos-ops の `common.resolve_config_timeout()`（config.ini の `timeout` > 機種別既定値 SRX_BRANCH 180 秒・他 60 秒）で解決し `dev.timeout` に設定、終了後に元へ戻す（プールで再利用されるため）。`JUNOS_DEADLINE`（既定 45 秒、0 で無効）が有効なら残り時間−余裕 10 秒に縮め、解決値が 60 秒を超えて収まらないか 30 秒を切るときは何もロックせず拒否して `push_config_start` へ誘導（dry_run は拒否しない）。残り時間は load・diff・commit_check・commit confirmed・ヘルスチェック・確定の各段の前に計算し直して `dev.timeout` に設定し、commit_check 後に足りなければ commit confirmed の前で止める。commit confirmed 後に尽きたら確定せず「COMMIT CONFIRMED PENDING」（自動ロールバック待ち）と返す。`push_config_start` は config hold を差分の前に取り、ジョブ終了まで保持する（プレビューと別の config で commit しないため）。同一ホストへの push は `_PUSH_ACTIVE_HOSTS` で 1 本に制限
-- `push_config_start` — push_config のバックグラウンド版。dry_run=True（既定）は差分だけ返しジョブを作らない。dry_run=False は差分を同期で返し、commit 以降を期限無し・フルのタイムアウトでスレッド実行（`_JOBS` に `kind="push_config"` で登録、config hold を取る）。途中で落ちても commit confirmed が機器側で自動ロールバック
-- `push_config_result` — ジョブの状態（running / done / failed / error / unknown）。`daily_brief_result` とはジョブ種別で分離
+- `push_config` — 設定投入（.set/.j2 ファイルまたはインライン、commit confirmed + ヘルスチェック）。`no_commit=True` で意図的自動ロールバック（ヘルスチェック・確定なし）。RPC タイムアウトは junos-ops の `common.resolve_config_timeout()`（config.ini の `timeout` > 機種別既定値 SRX_BRANCH 180 秒・他 120 秒）で解決し、全段をその値で実行する（期限に合わせて縮めない）。`dev.timeout` は終了後に元へ戻す（プールで再利用されるため）。`JUNOS_DEADLINE`（既定 45 秒、0 で無効）が有効なら push をバックグラウンドジョブとして走らせ、期限−5 秒まで待つ。終われば同じ答え、終わらなければ「Still running」と job_id を返す。0 なら従来どおり同期。commit confirmed を送った後の失敗は実際に送った段に基づいて報告する（commit confirmed RPC の失敗＝保留中かもしれない、ヘルスチェック例外＝保留中、確定 commit の失敗＝`show system commit` で確認）。同一ホストへの push は `_PUSH_ACTIVE_HOSTS`（host→job_id）で 1 本に制限し、ほかのツールは `_connect_and_run` で期限まで待って「host busy」を返す
+- `push_config_start` — push_config のバックグラウンド版。ジョブのスレッドが lock → load → diff を行い差分を公開（呼び出し側は期限まで待って差分を返す）、同じロック済みセッションのまま commit_check → commit confirmed → ヘルスチェック → 確定 → unlock へ進む（再 load・再 diff なし。commit されるのは返した差分そのもの）。dry_run=True（既定）はジョブの終了を待って `status: dry_run` で差分を返す。config hold はジョブ開始前に取りジョブ終了まで保持し、push の hold は `_HOLD_MAX_SECONDS` で stale 扱いしない（`_ACTIVE_PUSH_HOLDS`）。途中で落ちても commit confirmed が機器側で自動ロールバック
+- `push_config_result` — ジョブの状態（running / done / dry_run / failed / error / unknown）。running 中も差分が出ていれば `diff` を返す。`daily_brief_result` とはジョブ種別で分離
 
 #### MCP ツール — アップグレード操作（8）
 - `check_upgrade_readiness` — アップグレード準備状況
@@ -120,7 +120,7 @@ junos-ops は `common.args`（argparse.Namespace）と `common.config`（ConfigP
 2. 環境変数 `JUNOS_OPS_CONFIG`
 3. デフォルト探索（`./config.ini` → `~/.config/junos-ops/config.ini`）
 
-`~` はすべての経路で `os.path.expanduser()` により展開される。
+`~` はすべての経路で `os.path.expanduser()` により展開される。`_ensure_config` は読み込み済みの config と同じかを `expanduser` ＋ `realpath` で比べる（`~/...` と展開済みのパスを同じものとして扱い、ジョブの hold 中に自分自身を拒否しないため）。
 
 ## 開発環境セットアップ
 
