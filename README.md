@@ -7,7 +7,7 @@ English | [日本語](README.ja.md)
 MCP (Model Context Protocol) server for [junos-ops](https://github.com/shigechika/junos-ops).
 
 Exposes Juniper Networks device operations to MCP-compatible AI assistants
-(Claude Desktop, Claude Code, etc.) via STDIO transport.
+(Claude Desktop, Claude Code, OpenAI Codex, etc.) via STDIO transport.
 While [junos-ops](https://github.com/shigechika/junos-ops) is the CLI tool for humans,
 **junos-mcp** is the AI-facing interface to the same powerful engine.
 
@@ -319,16 +319,28 @@ Add to Claude Desktop config file:
 
 Restart Claude Desktop after editing.
 
+### Codex
+
+Register the MCP server with `codex mcp add`:
+
+```bash
+codex mcp add junos-mcp \
+  --env JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- python -m junos_mcp
+```
+
+Any other MCP client that launches stdio servers works the same way: give it `python -m junos_mcp` as the command and set `JUNOS_OPS_CONFIG` in its environment.
+
 ### Remote Access with OAuth (via mcp-stdio)
 
 junos-mcp supports Streamable HTTP transport, enabling remote access
-from Claude Desktop or Claude Code through
+from any MCP client (Claude Desktop, Claude Code, Codex, …) through
 [mcp-stdio](https://github.com/shigechika/mcp-stdio) as an OAuth proxy.
 
 ```mermaid
 graph TB
     A[junos-mcp<br/>remote server] <-- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>proxy]
-    B <-- "STDIO" --> C[Claude Desktop<br/>Claude Code]
+    B <-- "STDIO" --> C[MCP client<br/>Claude / Codex / …]
 ```
 
 **Step 1: Start junos-mcp with Streamable HTTP on the remote server**
@@ -343,7 +355,11 @@ The server listens on `http://localhost:8000/mcp` by default.
 **Step 2: Register mcp-stdio as the MCP server on your local machine**
 
 ```bash
+# Claude Code
 claude mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
+
+# Codex
+codex mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
 ```
 
 mcp-stdio handles OAuth 2.1 authentication (RFC 8414 discovery, RFC 7591
