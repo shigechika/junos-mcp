@@ -4,7 +4,7 @@
 
 [junos-ops](https://github.com/shigechika/junos-ops) 用の MCP (Model Context Protocol) サーバーです。
 
-Juniper Networks デバイスの操作を、MCP 対応の AI アシスタント（Claude Desktop、Claude Code など）から利用できるようにします。STDIO トランスポートを使用します。
+Juniper Networks デバイスの操作を、MCP 対応の AI アシスタント（Claude Desktop、Claude Code、OpenAI Codex など）から利用できるようにします。STDIO トランスポートを使用します。
 [junos-ops](https://github.com/shigechika/junos-ops) が人間向けの CLI ツールであるのに対し、**junos-mcp** は同じエンジンの AI 向けインターフェースです。
 
 ## 機能
@@ -282,16 +282,28 @@ Claude Desktop の設定ファイルに追加します:
 
 設定変更後は Claude Desktop を再起動してください。
 
+### Codex
+
+`codex mcp add` コマンドで MCP サーバーを登録します:
+
+```bash
+codex mcp add junos-mcp \
+  --env JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- python -m junos_mcp
+```
+
+stdio サーバーを起動できる MCP クライアントなら、どれでも同じ形で使えます。コマンドに `python -m junos_mcp` を指定し、環境変数 `JUNOS_OPS_CONFIG` を設定してください。
+
 ### リモートアクセス（OAuth 対応、mcp-stdio 経由）
 
 junos-mcp は Streamable HTTP トランスポートに対応しており、
 [mcp-stdio](https://github.com/shigechika/mcp-stdio) を OAuth プロキシとして使うことで
-Claude Desktop や Claude Code からリモートアクセスできます。
+任意の MCP クライアント（Claude Desktop、Claude Code、Codex など）からリモートアクセスできます。
 
 ```mermaid
 graph TB
     A[junos-mcp<br/>リモートサーバー] <-- "OAuth 2.1 + HTTPS" --> B[mcp-stdio<br/>プロキシ]
-    B <-- "STDIO" --> C[Claude Desktop<br/>Claude Code]
+    B <-- "STDIO" --> C[MCP クライアント<br/>Claude / Codex / …]
 ```
 
 **手順 1: リモートサーバーで junos-mcp を Streamable HTTP で起動**
@@ -306,7 +318,11 @@ JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
 **手順 2: ローカルマシンで mcp-stdio を MCP サーバーとして登録**
 
 ```bash
+# Claude Code
 claude mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
+
+# Codex
+codex mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
 ```
 
 mcp-stdio が OAuth 2.1 認証（RFC 8414 ディスカバリ、RFC 7591 動的クライアント登録、PKCE）を処理し、STDIO ↔ Streamable HTTP を中継します。

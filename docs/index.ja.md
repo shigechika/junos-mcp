@@ -3,7 +3,7 @@
 [junos-ops](https://github.com/shigechika/junos-ops) 用の MCP サーバーです。
 
 Juniper Networks デバイスの操作を、MCP 対応の AI アシスタント（Claude
-Desktop、Claude Code など）から利用できるようにします。STDIO トランスポート
+Desktop、Claude Code、OpenAI Codex など）から利用できるようにします。STDIO トランスポート
 を使用します。junos-ops が人間向けの CLI ツールであるのに対し、
 **junos-mcp** は同じエンジンの AI 向けインターフェースです — CLI show
 コマンド、設定差分と投入、ファームウェアアップグレード、RSI/SCF 診断、

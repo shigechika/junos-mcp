@@ -3,7 +3,7 @@
 MCP server for [junos-ops](https://github.com/shigechika/junos-ops).
 
 Exposes Juniper Networks device operations to MCP-compatible AI assistants
-(Claude Desktop, Claude Code, etc.) via STDIO transport. While junos-ops is
+(Claude Desktop, Claude Code, OpenAI Codex, etc.) via STDIO transport. While junos-ops is
 the CLI tool for humans, **junos-mcp** is the AI-facing interface to the same
 engine — CLI show commands, config diffs and pushes, firmware upgrades,
 RSI/SCF diagnostics, and a `daily_brief` health check across a fleet.

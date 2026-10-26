@@ -142,6 +142,16 @@ The `--scope` (`-s`) option controls where the configuration is stored:
 
 Restart Claude Desktop after editing.
 
+### Codex
+
+```bash
+codex mcp add junos-mcp \
+  --env JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- python -m junos_mcp
+```
+
+Any other MCP client that launches stdio servers works the same way: give it `python -m junos_mcp` as the command and set `JUNOS_OPS_CONFIG` in its environment.
+
 ### Remote access (OAuth via mcp-stdio)
 
 junos-mcp also supports Streamable HTTP transport, for remote access through
@@ -152,8 +162,11 @@ junos-mcp also supports Streamable HTTP transport, for remote access through
 JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
   python -m junos_mcp --transport streamable-http
 
-# on the local machine
+# on the local machine (Claude Code)
 claude mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
+
+# on the local machine (Codex)
+codex mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
 ```
 
 See the ["Remote Access with OAuth (via mcp-stdio)" section of the README](https://github.com/shigechika/junos-mcp/blob/main/README.md)

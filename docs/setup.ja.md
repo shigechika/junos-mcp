@@ -144,6 +144,16 @@ claude mcp add junos-mcp \
 
 設定変更後は Claude Desktop を再起動してください。
 
+### Codex
+
+```bash
+codex mcp add junos-mcp \
+  --env JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
+  -- python -m junos_mcp
+```
+
+stdio サーバーを起動できる MCP クライアントなら、どれでも同じ形で使えます。コマンドに `python -m junos_mcp` を指定し、環境変数 `JUNOS_OPS_CONFIG` を設定してください。
+
 ### リモートアクセス（OAuth 対応、mcp-stdio 経由）
 
 junos-mcp は Streamable HTTP トランスポートにも対応しており、
@@ -155,8 +165,11 @@ junos-mcp は Streamable HTTP トランスポートにも対応しており、
 JUNOS_OPS_CONFIG=~/.config/junos-ops/config.ini \
   python -m junos_mcp --transport streamable-http
 
-# ローカルマシン側
+# ローカルマシン側（Claude Code）
 claude mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
+
+# ローカルマシン側（Codex）
+codex mcp add junos-mcp -- mcp-stdio https://your-server:8000/mcp
 ```
 
 詳細な手順と OAuth プロバイダの設定は
