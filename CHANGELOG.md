@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0](https://github.com/shigechika/junos-mcp/compare/v0.23.0...v0.24.0) (2026-11-14)
+
+
+### Features
+
+* add Python 3.15 support ([#105](https://github.com/shigechika/junos-mcp/issues/105)) ([2217d38](https://github.com/shigechika/junos-mcp/commit/2217d38b7d73c1f24d070b7228490632eba002a4))
+
 ## [0.23.0](https://github.com/shigechika/junos-mcp/compare/v0.22.1...v0.23.0) (2026-10-18)
 
 
