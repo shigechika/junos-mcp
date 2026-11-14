@@ -23,7 +23,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-This mirrors `.github/workflows/test.yml` (matrix over Python 3.12–3.14 on
+This mirrors `.github/workflows/test.yml` (matrix over Python 3.12–3.15 on
 Linux, plus one Windows 3.12 job specifically to guard against stdio
 newline regressions, `modelcontextprotocol/python-sdk#2433`), plus a `lint`
 job running `ruff check .` at a pinned version. `ruff format` is
